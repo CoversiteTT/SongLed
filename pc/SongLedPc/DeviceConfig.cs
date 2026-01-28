@@ -111,7 +111,7 @@ internal class ExportedDeviceConfig
     /// 应用程序版本
     /// </summary>
     [JsonPropertyName("app_version")]
-    public string AppVersion { get; set; } = "1.0.0";
+    public string AppVersion { get; set; } = "0.0.1";
 
     /// <summary>
     /// 设备配置

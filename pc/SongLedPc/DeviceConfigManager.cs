@@ -284,7 +284,7 @@ internal class DeviceConfigManager : IDeviceConfigManager
         return new ExportedDeviceConfig
         {
             ExportTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
-            AppVersion = appVersion ?? "1.0.0",
+            AppVersion = appVersion ?? "0.0.1",
             DeviceConfig = config,
             ConnectionInfo = new()
             {
