@@ -29,17 +29,18 @@ ESP32-S3 + ST7789 2.4" TFT + EC11ロータリーエンコーダベースの機�
 
 ---
 
-## 📋 仓库介绍
-一个基于 ESP32-S3 + ST7789 2.4\" TFT + EC11 旋钮的桌面音量外设项目。通过 USB 串口与 Win11 PC 端程序通信，实现音量/输出设备控制、菜单 UI、歌词与专辑封面浮窗显示。固件使用 ESP-IDF + PlatformIO，PC 端以 C# 托盘程序为主。
+## 📋 Project Overview
 
-## 目前待改进（TODO）
-- 歌词是否自动滚动的判定逻辑
-- 封面加载进度条与传输进度同步
-- 歌词延迟优化（通信/刷新策略）
-- scrollTime 与 lyricSpeed 详细调整页单位显示
-- 浮窗自动关闭时间设置项
-- 浮窗关闭后残留清理
-- 圆弧调整界面上下限数字重叠
+A desktop volume control peripheral based on ESP32-S3 + ST7789 2.4" TFT + EC11 rotary encoder. Communicates with Windows 11 via USB to control volume, switch audio devices, display lyrics, and show album artwork.
+
+**Current TODOs**:
+- Auto scroll logic for lyrics
+- Album cover loading progress synchronization
+- Lyrics timing optimization
+- Detailed adjustment UI for scrollTime and lyricSpeed
+- Floating window auto-close timeout setting
+- Cleanup after floating window closes
+- Arc adjustment interface number overlap fix
 
 ## Hardware identified from the images
 - 2.4" TFT, 320x240, ST7789, 4-wire SPI
@@ -67,102 +68,70 @@ Encoder + buttons:
 
 If you need different pins, update the PIN_ constants in `src/main.cpp`.
 
-## Serial connection to Win11 (ESP-IDF)
-默认使用 UART0（板子上标注 COM 的 Type-C 口）。PC 程序就连这个 COM 口即可。
-如果你想改为原生 USB-CDC（标注 USB 的 Type-C 口），需要在 ESP-IDF 里开启 USB 控制台/CDC。
+## Serial Connection
 
-The ESP32 sends/receives simple text commands over USB CDC.
+Default: UART0 via Type-C (labeled COM). Connect PC program to this COM port.
 
-## Firmware build (PlatformIO + ESP-IDF)
-1) 安装 PlatformIO（VS Code 或 CLI）。
-2) 编译：
-   ```
-   pio run
-   ```
-3) 烧录：
-   ```
-   pio run -t upload --upload-port COM6
-   ```
+Alternative: Enable native USB-CDC on Type-C (labeled USB) by enabling USB console in ESP-IDF configuration.
 
-## Windows helper (primary: C++)
-### C++ helper (recommended)
-1) Build (MSVC + CMake):
-   ```
-   cmake -S pc/SongLedPcCpp -B pc/SongLedPcCpp/build
-   cmake --build pc/SongLedPcCpp/build --config Release
-   ```
-   Output EXE: `pc/SongLedPcCpp/build/Release/SongLedPcCpp.exe`
-2) Run:
-   ```
-   pc/SongLedPcCpp/build/Release/SongLedPcCpp.exe --port COM6
-   ```
-   If you have only one serial port, `--port` can be omitted.
-   If multiple ports, the helper will try HELLO handshake auto-detection.
-3) Auto detect by VID/PID (optional):
-   ```
-   pc/SongLedPcCpp/build/Release/SongLedPcCpp.exe --vid 303A --pid 1001
-   ```
-4) Quick autostart management (optional):
-   ```
-   pc/SongLedPcCpp/build/Release/SongLedPcCpp.exe --autostart on
-   pc/SongLedPcCpp/build/Release/SongLedPcCpp.exe --autostart off
-   pc/SongLedPcCpp/build/Release/SongLedPcCpp.exe --autostart toggle
-   ```
-5) Runtime:
-   - If Microsoft Visual C++ Runtime is missing, the app will prompt and open the download page automatically.
+## Firmware Build
 
-### C# helper (backup)
-1) Install .NET 8 SDK (only needed to build).
-2) From the repo root (run directly):
-   ```
-   dotnet run --project pc/SongLedPc -- --port COM6
-   ```
-   If you have only one serial port, `--port` can be omitted.
-   If multiple ports, the helper will try HELLO handshake auto-detection.
-3) Auto detect by VID/PID (optional):
-   ```
-   dotnet run --project pc/SongLedPc -- --vid 303A --pid 1001
-   ```
-4) Quick autostart management (optional):
-   ```
-   dotnet run --project pc/SongLedPc -- --autostart on
-   dotnet run --project pc/SongLedPc -- --autostart off
-   dotnet run --project pc/SongLedPc -- --autostart toggle
-   ```
-5) Publish single-file EXE:
-   ```
-   dotnet publish pc/SongLedPc -c Release -r win-x64 /p:PublishSingleFile=true /p:SelfContained=true /p:IncludeNativeLibrariesForSelfExtract=true
-   ```
-   Output in `pc/SongLedPc/bin/Release/net8.0-windows/win-x64/publish/`
+1. Install PlatformIO (VS Code or CLI)
+2. Build: `pio run`
+3. Upload: `pio run --target upload`
 
-### Tray + autostart
-The C# helper runs in the system tray (no console window). Right-click the tray icon to:
-- Reconnect
-- Toggle startup
-- Exit
+Firmware uses ESP-IDF + PlatformIO. PC companion: C# .NET 8 tray application or C++ Win32 version.
 
-### Python helper (legacy)
-1) Install Python 3.10+.
-2) From the repo root:
-   ```
-   pip install -r pc/requirements.txt
-   ```
-3) Run:
-   ```
-   python pc/win_audio_bridge.py --port COM6
-   ```
-   If you have only one serial port, `--port` can be omitted. Multiple ports will try HELLO handshake auto-detection.
+## Windows Helper
 
-## UI controls
-- Rotate encoder: move selection or change volume on the Volume screen.
-- Press encoder: confirm / enter.
-- K0 button: back.
+### C++ Version (Recommended)
 
-## Fonts (future lyrics)
-- Planned font: zpix pixel font (release)
-  - Source: https://github.com/SolidZORO/zpix-pixel-font/releases
-- Local file currently parked (not in build yet):
-  - `third_party/oled-ui-astra/Other/bdfconv/u8g2_font_zpix.c`
+**Build**:
+```bash
+cmake -S pc/SongLedPcCpp -B pc/SongLedPcCpp/build
+cmake --build pc/SongLedPcCpp/build --config Release
+```
+
+**Run**:
+```bash
+pc/SongLedPcCpp/build/Release/SongLedPcCpp.exe --port COM6
+```
+
+Options:
+- `--port COM6` - Specify serial port (auto-detect if omitted)
+- `--vid 303A --pid 1001` - USB device ID auto-detection
+- `--autostart on|off|toggle` - Manage Windows startup
+### C# Version (Backup)
+
+**Build & Run**:
+```bash
+dotnet run --project pc/SongLedPc -- --port COM6
+```
+
+**Publish as single-file EXE**:
+```bash
+dotnet publish pc/SongLedPc -c Release -r win-x64 /p:PublishSingleFile=true
+```
+
+**Features**:
+- Runs in system tray (no console window)
+- Auto-reconnect support
+- USB device auto-detection
+- Autostart management
+
+### Python Version (Legacy)
+
+**Run**:
+```bash
+pip install -r pc/requirements.txt
+python pc/win_audio_bridge.py --port COM6
+```
+
+## UI Controls
+
+- **Rotate encoder**: Move selection or change volume
+- **Press encoder**: Confirm / enter
+- **K0 button**: Back
 
 ## Serial protocol (ESP32 <-> PC)
 From ESP32:
@@ -194,9 +163,10 @@ Menu items are defined in `src/main.cpp`:
 - `experiments/` Bring-up / scratch projects
 - `docs/images/` Hardware photos
 
-## Handoff & troubleshooting
-- `docs/HANDOFF.md` (交接稿 + 关键注意事项)
-- `RELEASE_CHECKLIST.md` (GitHub 发布前检查清单)
+## Handoff & Troubleshooting
+
+- `docs/HANDOFF.md` - Technical notes and key considerations
+- `RELEASE_CHECKLIST.md` - Pre-release verification checklist
 
 ## Third-party libraries and attributions
 
@@ -243,12 +213,10 @@ See [LICENSE](LICENSE) file for details.
 ### Python version (legacy)
 - PySerial - Serial communication
 
-All rights to third-party libraries are retained by their respective authors.
-
 ---
 
 ## Documentation
 
-- [Full Multilingual README](README_MULTILINGUAL.md) - Complete docs in English, �ձ��Z, ����
+- [Full Multilingual README](README_MULTILINGUAL.md) - Complete docs in English, 日本語, and 中文
 - [Documentation Guide](DOCUMENTATION_GUIDE.md) - Language selection
 - [GitHub Discussions](https://github.com/CoversiteTT/SongLed/discussions) - Questions and help
