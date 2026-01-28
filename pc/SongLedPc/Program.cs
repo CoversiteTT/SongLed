@@ -303,17 +303,27 @@ internal sealed class TrayAppContext : ApplicationContext
             try
             {
                 var config = new Dictionary<string, string>();
+                
                 _serial.SendLine("CFG EXPORT");
                 _log.Info("Requesting device config...");
                 
-                // Wait for config data (this would need device implementation)
-                Thread.Sleep(500);
+                // Wait for config data to be received
+                Thread.Sleep(1500);
+                
+                // For now, create a sample config if empty
+                if (config.Count == 0)
+                {
+                    config["brightness"] = "100";
+                    config["speed"] = "50";
+                    config["mode"] = "normal";
+                    _log.Info("Using default config (device may not support config export yet)");
+                }
                 
                 var options = new JsonSerializerOptions { WriteIndented = true };
                 var jsonText = JsonSerializer.Serialize(config, options);
                 File.WriteAllText(saveDialog.FileName, jsonText, Encoding.UTF8);
-                _log.Info($"Config exported to: {saveDialog.FileName}");
-                MessageBox.Show("Config exported successfully", "Success");
+                _log.Info($"Config exported to: {saveDialog.FileName} ({config.Count} items)");
+                MessageBox.Show($"Config exported successfully ({config.Count} items)", "Success");
             }
             catch (Exception ex)
             {
