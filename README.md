@@ -1,127 +1,76 @@
 # SongLed - ESP32-S3 Volume Knob for Windows 11
 
-**Languages**: [English](#english-overview) | [日本語](#日本語概要) | [中文](#中文介绍)  
-**Documentation**: [Full Multilingual](README_MULTILINGUAL.md) | [Guide](DOCUMENTATION_GUIDE.md)
+**Language**: [English](#english) | [日本語](#日本語) | [中文](#中文)
 
 ---
 
-## English Overview
+# English
 
-A feature-rich desktop volume control peripheral based on ESP32-S3 + ST7789 2.4" TFT + EC11 rotary encoder. Communicates with Windows 11 via USB serial to control volume, switch audio devices, display lyrics, and show album artwork.
+## Overview
 
-**Quick Links**: [Multilingual Docs](README_MULTILINGUAL.md) | [Hardware Setup](#wiring-diagram) | [Build Guide](#firmware-build) | [License](LICENSE)
+Volume control device based on ESP32-S3, ST7789 2.4" TFT, EC11 rotary encoder. Communicates with Windows 11 via USB serial.
 
----
+Features: Volume control, audio device switching, lyrics display, album artwork.
 
-## 日本語概要
+## Hardware Pinout
 
-ESP32-S3 + ST7789 2.4" TFT + EC11ロータリーエンコーダベースの機能豊富なデスクトップボリュームコントロール。Windows 11とUSBシリアル接続でボリューム制御、オーディオデバイス切り替え、リリック表示、アルバムアートワーク表示が可能です。
+**TFT (ST7789)**:
+- SCL → GPIO12
+- SDA → GPIO11
+- RES → GPIO7
+- DC → GPIO9
+- CS → GPIO10
+- BLK → GPIO14
 
-**クイックリンク**: [多言語ドキュメント](README_MULTILINGUAL.md) | [ハードウェアセットアップ](#ハードウェア配線) | [ビルドガイド](#ファームウェアビルド) | [ライセンス](LICENSE)
+**Encoder & Buttons**:
+- A → GPIO15
+- B → GPIO16
+- PUSH → GPIO17
+- K0 (back) → GPIO18
 
----
-
-## 中文介绍
-
-一个基于 ESP32-S3 + ST7789 2.4" TFT + EC11 旋钮的桌面音量外设项目。通过 USB 串口与 Win11 通信，实现音量控制、音频输出切换、歌词显示和专辑封面显示。
-
-**快速链接**: [多语言文档](README_MULTILINGUAL.md) | [硬件设置](#硬件接线) | [构建指南](#固件编译) | [许可证](LICENSE)
-
----
-
-## 📋 Project Overview
-
-A desktop volume control peripheral based on ESP32-S3 + ST7789 2.4" TFT + EC11 rotary encoder. Communicates with Windows 11 via USB to control volume, switch audio devices, display lyrics, and show album artwork.
-
-**Current TODOs**:
-- Auto scroll logic for lyrics
-- Album cover loading progress synchronization
-- Lyrics timing optimization
-- Detailed adjustment UI for scrollTime and lyricSpeed
-- Floating window auto-close timeout setting
-- Cleanup after floating window closes
-- Arc adjustment interface number overlap fix
-
-## Hardware identified from the images
-- 2.4" TFT, 320x240, ST7789, 4-wire SPI
-- EC11 rotary encoder (A/B + push)
-- Extra button labeled K0 (used as back)
-- VCC supports 3.3V or 5V
-- Dev board: ESP32-S3 N16R8 (native USB available)
-
-## Wiring (default pins in firmware)
-TFT:
-- GND -> GND
-- VCC -> 3V3
-- SCL -> GPIO12
-- SDA -> GPIO11
-- RES -> GPIO7
-- DC  -> GPIO9
-- CS  -> GPIO10
-- BLK -> GPIO14
-
-Encoder + buttons:
-- A    -> GPIO15
-- B    -> GPIO16
-- PUSH -> GPIO17
-- K0   -> GPIO18
-
-If you need different pins, update the PIN_ constants in `src/main.cpp`.
-
-## Serial Connection
-
-Default: UART0 via Type-C (labeled COM). Connect PC program to this COM port.
-
-Alternative: Enable native USB-CDC on Type-C (labeled USB) by enabling USB console in ESP-IDF configuration.
+Edit `src/main.cpp` to change pins.
 
 ## Firmware Build
 
-1. Install PlatformIO (VS Code or CLI)
-2. Build: `pio run`
-3. Upload: `pio run --target upload`
+Build:
+```bash
+pio run --environment esp32s3
+```
 
-Firmware uses ESP-IDF + PlatformIO. PC companion: C# .NET 8 tray application or C++ Win32 version.
+Upload:
+```bash
+pio run --environment esp32s3 --target upload
+```
 
 ## Windows Helper
 
-### C++ Version (Recommended)
+### C++ Version
 
-**Build**:
+Build:
 ```bash
 cmake -S pc/SongLedPcCpp -B pc/SongLedPcCpp/build
 cmake --build pc/SongLedPcCpp/build --config Release
 ```
 
-**Run**:
+Run:
 ```bash
 pc/SongLedPcCpp/build/Release/SongLedPcCpp.exe --port COM6
 ```
 
-Options:
-- `--port COM6` - Specify serial port (auto-detect if omitted)
-- `--vid 303A --pid 1001` - USB device ID auto-detection
-- `--autostart on|off|toggle` - Manage Windows startup
-### C# Version (Backup)
+### C# Version
 
-**Build & Run**:
+Run:
 ```bash
 dotnet run --project pc/SongLedPc -- --port COM6
 ```
 
-**Publish as single-file EXE**:
+Publish:
 ```bash
 dotnet publish pc/SongLedPc -c Release -r win-x64 /p:PublishSingleFile=true
 ```
 
-**Features**:
-- Runs in system tray (no console window)
-- Auto-reconnect support
-- USB device auto-detection
-- Autostart management
+### Python Version
 
-### Python Version (Legacy)
-
-**Run**:
 ```bash
 pip install -r pc/requirements.txt
 python pc/win_audio_bridge.py --port COM6
@@ -129,93 +78,294 @@ python pc/win_audio_bridge.py --port COM6
 
 ## UI Controls
 
-- **Rotate encoder**: Move selection or change volume
-- **Press encoder**: Confirm / enter
-- **K0 button**: Back
+Rotate encoder: Move / change volume  
+Press encoder: Confirm  
+K0 button: Back
 
-## Serial protocol (ESP32 <-> PC)
+## Serial Protocol
+
 From ESP32:
-- `VOL GET`
-- `VOL SET <0-100>`
-- `MUTE`
-- `SPK LIST`
-- `SPK SET <index>`
-- `HELLO` (handshake request)
+```
+VOL GET
+VOL SET <0-100>
+MUTE
+SPK LIST
+SPK SET <index>
+HELLO
+```
 
 From PC:
-- `VOL <0-100>`
-- `MUTE <0/1>`
-- `SPK BEGIN`
-- `SPK ITEM <index> <name>`
-- `SPK END`
-- `SPK CUR <index>`
-- `HELLO OK` (handshake response)
+```
+VOL <0-100>
+MUTE <0/1>
+SPK BEGIN
+SPK ITEM <index> <name>
+SPK END
+SPK CUR <index>
+HELLO OK
+```
 
-## Extending menus
-Menu items are defined in `src/main.cpp`:
-- Add new items to `mainItems`.
-- Add new actions by creating new `actionX` functions and assigning them to items.
+## Project Structure
 
-## Project layout
-- `src/` Firmware sources (ESP-IDF)
-- `third_party/` UI framework
-- `pc/` PC helpers (C# + Python + C++ version)
-- `experiments/` Bring-up / scratch projects
-- `docs/images/` Hardware photos
+- `src/` - Firmware (ESP-IDF)
+- `pc/` - Windows companion (C#/C++/Python)
+- `third_party/` - UI framework & dependencies
+- `docs/` - Documentation
 
-## Handoff & Troubleshooting
+## Third-Party Libraries
 
-- `docs/HANDOFF.md` - Technical notes and key considerations
+| Library | License | Purpose |
+|---------|---------|---------|
+| oled-ui-astra | GPLv3 | UI Framework |
+| U8G2 | BSD 3-Clause | Graphics Library |
+| ZPIX Font | OFL 1.1 | Chinese Font |
 
-## Third-party libraries and attributions
-
-This project incorporates and modifies the following third-party libraries:
-
-### 1. **oled-ui-astra** (UI Framework)
-- **Source**: https://github.com/dcfsswindy/oled-ui-astra
-- **License**: GNU General Public License v3.0 (GPLv3)
-- **Location**: `third_party/oled-ui-astra/`
-- **Usage**: Core UI framework adapted for ESP32-S3 with 2.4" TFT display
-- **Modifications**: Hardware abstraction layer, display integration, menu customization
-
-### 2. **U8G2** (Graphics Library)
-- **Source**: https://github.com/olikraus/u8g2
-- **License**: BSD 3-Clause License
-- **Location**: `third_party/oled-ui-astra/Core/Src/hal/hal_dreamCore/components/oled/graph_lib/u8g2/`
-- **Usage**: Graphics rendering, font support, display buffering
-- **Note**: Integrated as part of the oled-ui-astra framework
-
-### 3. **ZPIX Pixel Font**
-- **Source**: https://github.com/SolidZORO/zpix-pixel-font
-- **License**: OFL (Open Font License) 1.1
-- **Location**: Font data included in `u8g2_font_zpix.c`
-- **Usage**: Planned for lyrics display (currently not active in build)
-
-## License
-
-This project is licensed under the **GNU General Public License v3.0 (GPLv3)** to comply with the oled-ui-astra framework license.
-
-See [LICENSE](LICENSE) file for details.
-
-## PC Dependencies
-
-### C# version (SongLedPc)
-- NAudio 2.2.1 - Audio control (SMTC bridge)
-- Microsoft.Windows.SDK.NET - Windows API interop
-- System.Management - Device management
-- System.IO.Ports - Serial communication
-
-### C++ version (SongLedPcCpp)
-- Win32 API (ole32, oleaut32, uuid, setupapi, shell32, shlwapi)
-- System serial port communication (no external dependencies)
-
-### Python version (legacy)
-- PySerial - Serial communication
+See [THIRD_PARTY.md](THIRD_PARTY.md) for details.
 
 ---
 
-## Documentation
+# 日本語
 
-- [Full Multilingual README](README_MULTILINGUAL.md) - Complete docs in English, 日本語, and 中文
-- [Documentation Guide](DOCUMENTATION_GUIDE.md) - Language selection
-- [GitHub Discussions](https://github.com/CoversiteTT/SongLed/discussions) - Questions and help
+## 概要
+
+ESP32-S3、ST7789 2.4" TFT、EC11ロータリーエンコーダベースのボリュームコントロール。Windows 11とUSBシリアル接続で通信。
+
+機能: ボリューム制御、オーディオデバイス切り替え、リリック表示、アルバムアートワーク。
+
+## ハードウェア配線
+
+**TFT (ST7789)**:
+- SCL → GPIO12
+- SDA → GPIO11
+- RES → GPIO7
+- DC → GPIO9
+- CS → GPIO10
+- BLK → GPIO14
+
+**エンコーダ & ボタン**:
+- A → GPIO15
+- B → GPIO16
+- PUSH → GPIO17
+- K0 (戻る) → GPIO18
+
+ピンを変更するには `src/main.cpp` を編集してください。
+
+## ファームウェアビルド
+
+ビルド:
+```bash
+pio run --environment esp32s3
+```
+
+アップロード:
+```bash
+pio run --environment esp32s3 --target upload
+```
+
+## Windows ヘルパー
+
+### C++ バージョン
+
+ビルド:
+```bash
+cmake -S pc/SongLedPcCpp -B pc/SongLedPcCpp/build
+cmake --build pc/SongLedPcCpp/build --config Release
+```
+
+実行:
+```bash
+pc/SongLedPcCpp/build/Release/SongLedPcCpp.exe --port COM6
+```
+
+### C# バージョン
+
+実行:
+```bash
+dotnet run --project pc/SongLedPc -- --port COM6
+```
+
+公開:
+```bash
+dotnet publish pc/SongLedPc -c Release -r win-x64 /p:PublishSingleFile=true
+```
+
+### Python バージョン
+
+```bash
+pip install -r pc/requirements.txt
+python pc/win_audio_bridge.py --port COM6
+```
+
+## UI 制御
+
+エンコーダ回転: 移動 / 音量変更  
+エンコーダ押下: 確認  
+K0 ボタン: 戻る
+
+## シリアルプロトコル
+
+ESP32 から:
+```
+VOL GET
+VOL SET <0-100>
+MUTE
+SPK LIST
+SPK SET <index>
+HELLO
+```
+
+PC から:
+```
+VOL <0-100>
+MUTE <0/1>
+SPK BEGIN
+SPK ITEM <index> <name>
+SPK END
+SPK CUR <index>
+HELLO OK
+```
+
+## プロジェクト構成
+
+- `src/` - ファームウェア (ESP-IDF)
+- `pc/` - Windows コンパニオン (C#/C++/Python)
+- `third_party/` - UI フレームワーク & 依存関係
+- `docs/` - ドキュメント
+
+## サードパーティライブラリ
+
+| ライブラリ | ライセンス | 用途 |
+|-----------|-----------|------|
+| oled-ui-astra | GPLv3 | UI フレームワーク |
+| U8G2 | BSD 3-Clause | グラフィックスライブラリ |
+| ZPIX Font | OFL 1.1 | 中国語フォント |
+
+詳細は [THIRD_PARTY.md](THIRD_PARTY.md) を参照してください。
+
+---
+
+# 中文
+
+## 概览
+
+基于 ESP32-S3、ST7789 2.4" TFT、EC11 旋钮的音量控制设备。通过 USB 串口与 Windows 11 通信。
+
+功能: 音量控制、音频设备切换、歌词显示、专辑封面。
+
+## 硬件接线
+
+**TFT (ST7789)**:
+- SCL → GPIO12
+- SDA → GPIO11
+- RES → GPIO7
+- DC → GPIO9
+- CS → GPIO10
+- BLK → GPIO14
+
+**旋钮 & 按钮**:
+- A → GPIO15
+- B → GPIO16
+- PUSH → GPIO17
+- K0 (返回) → GPIO18
+
+编辑 `src/main.cpp` 修改引脚。
+
+## 固件编译
+
+编译:
+```bash
+pio run --environment esp32s3
+```
+
+烧录:
+```bash
+pio run --environment esp32s3 --target upload
+```
+
+## Windows 助手
+
+### C++ 版本
+
+编译:
+```bash
+cmake -S pc/SongLedPcCpp -B pc/SongLedPcCpp/build
+cmake --build pc/SongLedPcCpp/build --config Release
+```
+
+运行:
+```bash
+pc/SongLedPcCpp/build/Release/SongLedPcCpp.exe --port COM6
+```
+
+### C# 版本
+
+运行:
+```bash
+dotnet run --project pc/SongLedPc -- --port COM6
+```
+
+发布:
+```bash
+dotnet publish pc/SongLedPc -c Release -r win-x64 /p:PublishSingleFile=true
+```
+
+### Python 版本
+
+```bash
+pip install -r pc/requirements.txt
+python pc/win_audio_bridge.py --port COM6
+```
+
+## UI 操作
+
+旋转旋钮: 移动 / 改变音量  
+按下旋钮: 确认  
+K0 按钮: 返回
+
+## 串口协议
+
+ESP32 发送:
+```
+VOL GET
+VOL SET <0-100>
+MUTE
+SPK LIST
+SPK SET <index>
+HELLO
+```
+
+PC 发送:
+```
+VOL <0-100>
+MUTE <0/1>
+SPK BEGIN
+SPK ITEM <index> <name>
+SPK END
+SPK CUR <index>
+HELLO OK
+```
+
+## 项目结构
+
+- `src/` - 固件 (ESP-IDF)
+- `pc/` - Windows 伴侣应用 (C#/C++/Python)
+- `third_party/` - UI 框架 & 依赖
+- `docs/` - 文档
+
+## 第三方库
+
+| 库 | 许可证 | 用途 |
+|---|--------|------|
+| oled-ui-astra | GPLv3 | UI 框架 |
+| U8G2 | BSD 3-Clause | 图形库 |
+| ZPIX Font | OFL 1.1 | 中文字体 |
+
+详见 [THIRD_PARTY.md](THIRD_PARTY.md)。
+
+---
+
+## License
+
+GNU General Public License v3.0 - [LICENSE](LICENSE)
+
+[THIRD_PARTY.md](THIRD_PARTY.md) | [Technical Details](docs/HANDOFF.md) | [GitHub](https://github.com/CoversiteTT/SongLed)
