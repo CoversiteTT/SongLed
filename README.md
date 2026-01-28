@@ -122,6 +122,18 @@ HELLO OK
 
 See [THIRD_PARTY.md](THIRD_PARTY.md) for details.
 
+## Required Dependencies
+
+The PC application requires two NetEase Cloud Music plugins to be installed first:
+
+1. **BetterNCM Installer** - NetEase Cloud Music plugin framework
+   - https://github.com/std-microblock/BetterNCM-Installer/releases
+
+2. **Lyricify Lyrics Helper** - Lyrics synchronization and display plugin
+   - https://github.com/WXRIW/Lyricify-Lyrics-Helper
+
+Install these plugins before using the PC application.
+
 ---
 
 # 日本語
@@ -242,6 +254,18 @@ HELLO OK
 
 詳細は [THIRD_PARTY.md](THIRD_PARTY.md) を参照してください。
 
+## 必須依存関係
+
+PC アプリケーションを使用する前に、2 つのネットイーズ クラウド ミュージック プラグインをインストールする必要があります:
+
+1. **BetterNCM Installer** - NetEase Cloud Music プラグインフレームワーク
+   - https://github.com/std-microblock/BetterNCM-Installer/releases
+
+2. **Lyricify Lyrics Helper** - 歌詞同期・表示プラグイン
+   - https://github.com/WXRIW/Lyricify-Lyrics-Helper
+
+PC アプリケーションを使用する前にこれらのプラグインをインストールしてください。
+
 ---
 
 # 中文
@@ -361,6 +385,18 @@ HELLO OK
 | ZPIX Font | OFL 1.1 | 中文字体 |
 
 详见 [THIRD_PARTY.md](THIRD_PARTY.md)。
+
+## 应用依赖库
+
+使用 PC 应用前需先安装两个网易云音乐插件:
+
+1. **BetterNCM 安装器** - 网易云音乐插件框架
+   - https://github.com/std-microblock/BetterNCM-Installer/releases
+
+2. **Lyricify 歌词助手** - 歌词同步和显示插件
+   - https://github.com/WXRIW/Lyricify-Lyrics-Helper
+
+请在使用 PC 应用前先安装这两个插件。
 
 ---
 
