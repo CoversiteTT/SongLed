@@ -1,6 +1,35 @@
-# ESP32-S3 Volume + Speaker Knob (Win11)
+# SongLed - ESP32-S3 Volume Knob for Windows 11
 
-## 仓库介绍
+**Languages**: [English](#english-overview) | [日本語](#日本語概要) | [中文](#中文介绍)  
+**Documentation**: [Full Multilingual](README_MULTILINGUAL.md) | [Guide](DOCUMENTATION_GUIDE.md)
+
+---
+
+## English Overview
+
+A feature-rich desktop volume control peripheral based on ESP32-S3 + ST7789 2.4" TFT + EC11 rotary encoder. Communicates with Windows 11 via USB serial to control volume, switch audio devices, display lyrics, and show album artwork.
+
+**Quick Links**: [Multilingual Docs](README_MULTILINGUAL.md) | [Hardware Setup](#wiring-diagram) | [Build Guide](#firmware-build) | [License](LICENSE)
+
+---
+
+## 日本語概要
+
+ESP32-S3 + ST7789 2.4" TFT + EC11ロータリーエンコーダベースの機能豊富なデスクトップボリュームコントロール。Windows 11とUSBシリアル接続でボリューム制御、オーディオデバイス切り替え、リリック表示、アルバムアートワーク表示が可能です。
+
+**クイックリンク**: [多言語ドキュメント](README_MULTILINGUAL.md) | [ハードウェアセットアップ](#ハードウェア配線) | [ビルドガイド](#ファームウェアビルド) | [ライセンス](LICENSE)
+
+---
+
+## 中文介绍
+
+一个基于 ESP32-S3 + ST7789 2.4" TFT + EC11 旋钮的桌面音量外设项目。通过 USB 串口与 Win11 通信，实现音量控制、音频输出切换、歌词显示和专辑封面显示。
+
+**快速链接**: [多语言文档](README_MULTILINGUAL.md) | [硬件设置](#硬件接线) | [构建指南](#固件编译) | [许可证](LICENSE)
+
+---
+
+## 📋 仓库介绍
 一个基于 ESP32-S3 + ST7789 2.4\" TFT + EC11 旋钮的桌面音量外设项目。通过 USB 串口与 Win11 PC 端程序通信，实现音量/输出设备控制、菜单 UI、歌词与专辑封面浮窗显示。固件使用 ESP-IDF + PlatformIO，PC 端以 C# 托盘程序为主。
 
 ## 目前待改进（TODO）
@@ -215,3 +244,11 @@ See [LICENSE](LICENSE) file for details.
 - PySerial - Serial communication
 
 All rights to third-party libraries are retained by their respective authors.
+
+---
+
+## Documentation
+
+- [Full Multilingual README](README_MULTILINGUAL.md) - Complete docs in English, �ձ��Z, ����
+- [Documentation Guide](DOCUMENTATION_GUIDE.md) - Language selection
+- [GitHub Discussions](https://github.com/CoversiteTT/SongLed/discussions) - Questions and help
