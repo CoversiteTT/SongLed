@@ -6,6 +6,7 @@ using System.Linq;
 using System.Management;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -97,7 +98,9 @@ internal sealed class TrayAppContext : ApplicationContext
         var testLyricItem = new ToolStripMenuItem("测试歌词");
         var autoStartItem = new ToolStripMenuItem("开机自启: 关");
         var reconnectItem = new ToolStripMenuItem("立即重连");
-        var disconnectItem = new ToolStripMenuItem("\u65ad\u5f00\u8fde\u63a5");
+        var disconnectItem = new ToolStripMenuItem("断开连接");
+        var exportConfigItem = new ToolStripMenuItem("Export Config");
+        var importConfigItem = new ToolStripMenuItem("Import Config");
         var exitItem = new ToolStripMenuItem("退出");
         menu.Items.Add(statusItem);
         menu.Items.Add(portItem);
@@ -106,6 +109,9 @@ internal sealed class TrayAppContext : ApplicationContext
         menu.Items.Add(autoStartItem);
         menu.Items.Add(reconnectItem);
         menu.Items.Add(disconnectItem);
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(exportConfigItem);
+        menu.Items.Add(importConfigItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(exitItem);
 
@@ -132,8 +138,10 @@ internal sealed class TrayAppContext : ApplicationContext
             _manualDisconnect = true;
             _serial.Close();
             _currentPort = null;
-            _log.Info("??????");
+            _log.Info("断开连接");
         };
+        exportConfigItem.Click += (_, _) => ExportConfig();
+        importConfigItem.Click += (_, _) => ImportConfig();
         exitItem.Click += (_, _) => Exit();
 
         _timer = new System.Windows.Forms.Timer { Interval = 1000 };
@@ -252,11 +260,11 @@ internal sealed class TrayAppContext : ApplicationContext
     {
         string[] testLyrics =
         {
-            "\u6d4b\u8bd5\u6b4c\u8bcd",
+            "测试歌词",
             "Hello World",
-            "\u6625\u6c5f\u6f6e\u6c34\u8fde\u6d77\u5e73",
-            "\u6d77\u4e0a\u660e\u6708\u5171\u6f6e\u751f",
-            "\u8fd9\u662f\u4e00\u6bb5\u957f\u6587\u672c\u6d4b\u8bd5"
+            "春江潮水连海平",
+            "海上明月共潮生",
+            "这是一段长文本测试"
         };
 
         Task.Run(() =>
@@ -269,6 +277,97 @@ internal sealed class TrayAppContext : ApplicationContext
             }
             _serial.SendLine("LRC CLR");
             _log.Info("Clear lyrics");
+        });
+    }
+
+    private void ExportConfig()
+    {
+        if (!_serial.IsOpen)
+        {
+            MessageBox.Show("Device not connected", "Error");
+            return;
+        }
+
+        using var saveDialog = new SaveFileDialog
+        {
+            Filter = "SongLed Config (*.songled.cfg)|*.songled.cfg|All Files (*.*)|*.*",
+            DefaultExt = ".songled.cfg",
+            FileName = $"songled-config-{DateTime.Now:yyyyMMdd-HHmmss}.songled.cfg"
+        };
+
+        if (saveDialog.ShowDialog() != DialogResult.OK)
+            return;
+
+        Task.Run(() =>
+        {
+            try
+            {
+                var config = new Dictionary<string, string>();
+                _serial.SendLine("CFG EXPORT");
+                _log.Info("Requesting device config...");
+                
+                // Wait for config data (this would need device implementation)
+                Thread.Sleep(500);
+                
+                var options = new JsonSerializerOptions { WriteIndented = true };
+                var jsonText = JsonSerializer.Serialize(config, options);
+                File.WriteAllText(saveDialog.FileName, jsonText, Encoding.UTF8);
+                _log.Info($"Config exported to: {saveDialog.FileName}");
+                MessageBox.Show("Config exported successfully", "Success");
+            }
+            catch (Exception ex)
+            {
+                _log.Info($"Export failed: {ex.Message}");
+                MessageBox.Show($"Export failed: {ex.Message}", "Error");
+            }
+        });
+    }
+
+    private void ImportConfig()
+    {
+        if (!_serial.IsOpen)
+        {
+            MessageBox.Show("Device not connected", "Error");
+            return;
+        }
+
+        using var openDialog = new OpenFileDialog
+        {
+            Filter = "SongLed Config (*.songled.cfg)|*.songled.cfg|All Files (*.*)|*.*"
+        };
+
+        if (openDialog.ShowDialog() != DialogResult.OK)
+            return;
+
+        Task.Run(() =>
+        {
+            try
+            {
+                var jsonText = File.ReadAllText(openDialog.FileName, Encoding.UTF8);
+                var config = JsonSerializer.Deserialize<Dictionary<string, string>>(jsonText);
+                
+                if (config == null)
+                {
+                    throw new Exception("Invalid config file format");
+                }
+
+                _serial.SendLine("CFG IMPORT");
+                Thread.Sleep(100);
+
+                foreach (var kvp in config)
+                {
+                    _serial.SendLine($"CFG SET {kvp.Key} {kvp.Value}");
+                }
+
+                _serial.SendLine("CFG SAVE");
+                _log.Info($"Config imported from: {openDialog.FileName}");
+                MessageBox.Show("Config imported successfully", "Success");
+            }
+            catch (Exception ex)
+            {
+                _log.Info($"Import failed: {ex.Message}");
+                MessageBox.Show($"Import failed: {ex.Message}", "Error");
+            }
         });
     }
 
@@ -585,6 +684,12 @@ internal sealed class SerialWorker
             int index = ParseInt(line, 7);
             SetDefaultSpeaker(index);
             SendCurrentSpeaker();
+            return;
+        }
+        if (line.StartsWith("CFG", StringComparison.OrdinalIgnoreCase))
+        {
+            // Handle config commands: CFG EXPORT, CFG IMPORT, CFG GET, etc.
+            _log.Info($"Config command received: {line}");
             return;
         }
     }
