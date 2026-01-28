@@ -79,6 +79,7 @@ internal sealed class TrayAppContext : ApplicationContext
     private readonly Settings _settings;
     private readonly Logger _log;
     private readonly SmtcBridge _smtc;
+    private readonly DeviceConfigManager _configManager;
     private string? _currentPort;
     private volatile bool _connecting;
     private bool _manualDisconnect;
@@ -90,6 +91,7 @@ internal sealed class TrayAppContext : ApplicationContext
         _log = new Logger(Path.Combine(AppContext.BaseDirectory, "songled.log"));
         _serial = new SerialWorker(_log);
         _smtc = new SmtcBridge(_log, _serial);
+        _configManager = new DeviceConfigManager(_serial, _log);
         _serial.HelloReceived += () => _smtc.ResendNowPlaying();
 
         var menu = new ContextMenuStrip();
@@ -284,7 +286,7 @@ internal sealed class TrayAppContext : ApplicationContext
     {
         if (!_serial.IsOpen)
         {
-            MessageBox.Show("Device not connected", "Error");
+            MessageBox.Show("设备未连接", "错误");
             return;
         }
 
@@ -298,37 +300,53 @@ internal sealed class TrayAppContext : ApplicationContext
         if (saveDialog.ShowDialog() != DialogResult.OK)
             return;
 
-        Task.Run(() =>
+        Task.Run(async () =>
         {
             try
             {
-                var config = new Dictionary<string, string>();
+                _log.Info("正在导出设备配置...");
                 
-                _serial.SendLine("CFG EXPORT");
-                _log.Info("Requesting device config...");
+                // 从设备读取当前配置
+                var deviceConfig = await _configManager.ReadConfigAsync();
                 
-                // Wait for config data to be received
-                Thread.Sleep(1500);
-                
-                // For now, create a sample config if empty
-                if (config.Count == 0)
+                if (deviceConfig == null)
                 {
-                    config["brightness"] = "100";
-                    config["speed"] = "50";
-                    config["mode"] = "normal";
-                    _log.Info("Using default config (device may not support config export yet)");
+                    _log.Info("无法读取设备配置，使用默认配置");
+                    deviceConfig = new DeviceConfig();
                 }
+
+                // 创建导出格式
+                var exported = _configManager.CreateExport(
+                    deviceConfig,
+                    _currentPort,
+                    "1.0.0"
+                );
+
+                // 序列化为JSON
+                var options = new JsonSerializerOptions 
+                { 
+                    WriteIndented = true,
+                    DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+                };
                 
-                var options = new JsonSerializerOptions { WriteIndented = true };
-                var jsonText = JsonSerializer.Serialize(config, options);
+                var jsonText = JsonSerializer.Serialize(exported, options);
                 File.WriteAllText(saveDialog.FileName, jsonText, Encoding.UTF8);
-                _log.Info($"Config exported to: {saveDialog.FileName} ({config.Count} items)");
-                MessageBox.Show($"Config exported successfully ({config.Count} items)", "Success");
+                
+                _log.Info($"配置已导出到: {saveDialog.FileName}");
+                
+                // 显示摘要信息
+                var summary = exported.GetSummary();
+                MessageBox.Show(
+                    $"配置导出成功\n\n文件: {Path.GetFileName(saveDialog.FileName)}\n\n{summary}",
+                    "导出完成",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information
+                );
             }
             catch (Exception ex)
             {
-                _log.Info($"Export failed: {ex.Message}");
-                MessageBox.Show($"Export failed: {ex.Message}", "Error");
+                _log.Info($"导出失败: {ex.Message}");
+                MessageBox.Show($"导出失败: {ex.Message}", "错误");
             }
         });
     }
@@ -337,7 +355,7 @@ internal sealed class TrayAppContext : ApplicationContext
     {
         if (!_serial.IsOpen)
         {
-            MessageBox.Show("Device not connected", "Error");
+            MessageBox.Show("设备未连接", "错误");
             return;
         }
 
@@ -349,34 +367,68 @@ internal sealed class TrayAppContext : ApplicationContext
         if (openDialog.ShowDialog() != DialogResult.OK)
             return;
 
-        Task.Run(() =>
+        Task.Run(async () =>
         {
+            ProgressForm? progressForm = null;
             try
             {
-                var jsonText = File.ReadAllText(openDialog.FileName, Encoding.UTF8);
-                var config = JsonSerializer.Deserialize<Dictionary<string, string>>(jsonText);
+                _log.Info($"正在导入配置: {openDialog.FileName}");
                 
-                if (config == null)
+                // 读取并解析配置文件
+                var jsonText = File.ReadAllText(openDialog.FileName, Encoding.UTF8);
+                var exported = JsonSerializer.Deserialize<ExportedDeviceConfig>(jsonText);
+
+                if (exported == null || !exported.IsValid())
                 {
-                    throw new Exception("Invalid config file format");
+                    throw new Exception("配置文件格式无效或损坏");
                 }
 
-                _serial.SendLine("CFG IMPORT");
-                Thread.Sleep(100);
+                // 显示配置摘要
+                var summary = exported.GetSummary();
+                var confirmResult = MessageBox.Show(
+                    $"确认导入以下配置?\n\n{summary}",
+                    "确认导入",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Question
+                );
 
-                foreach (var kvp in config)
+                if (confirmResult != DialogResult.Yes)
                 {
-                    _serial.SendLine($"CFG SET {kvp.Key} {kvp.Value}");
+                    _log.Info("用户取消了配置导入");
+                    return;
                 }
 
-                _serial.SendLine("CFG SAVE");
-                _log.Info($"Config imported from: {openDialog.FileName}");
-                MessageBox.Show("Config imported successfully", "Success");
+                try
+                {
+                    // 导入配置到设备
+                    var success = await _configManager.LoadFromExportedConfigAsync(exported);
+
+                    if (success)
+                    {
+                        _log.Info("配置导入成功");
+                        
+                        MessageBox.Show(
+                            $"配置导入成功\n\n{exported.GetSummary()}",
+                            "导入完成",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Information
+                        );
+                    }
+                    else
+                    {
+                        throw new Exception("配置导入失败");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    throw;
+                }
             }
             catch (Exception ex)
             {
-                _log.Info($"Import failed: {ex.Message}");
-                MessageBox.Show($"Import failed: {ex.Message}", "Error");
+                _log.Info($"导入失败: {ex.Message}");
+                
+                MessageBox.Show($"导入失败: {ex.Message}", "错误");
             }
         });
     }
@@ -542,6 +594,7 @@ internal sealed class SerialWorker
     private List<MMDevice> _renderDevices = new();
     private bool _helloNotified;
     private DateTime _lastHelloAck = DateTime.MinValue;
+    private TaskCompletionSource<string>? _cfgResponseWaiter;
 
     public bool IsOpen => _port != null && _port.IsOpen;
     public event Action? HelloReceived;
@@ -698,8 +751,27 @@ internal sealed class SerialWorker
         }
         if (line.StartsWith("CFG", StringComparison.OrdinalIgnoreCase))
         {
-            // Handle config commands: CFG EXPORT, CFG IMPORT, CFG GET, etc.
-            _log.Info($"Config command received: {line}");
+            // Handle config commands: CFG SET (response from device)
+            if (line.StartsWith("CFG SET", StringComparison.OrdinalIgnoreCase))
+            {
+                _log.Info($"收到配置响应: {line}");
+                if (_cfgResponseWaiter != null && !_cfgResponseWaiter.Task.IsCompleted)
+                {
+                    _cfgResponseWaiter.TrySetResult(line);
+                }
+            }
+            else if (line.StartsWith("CFG IMPORT OK", StringComparison.OrdinalIgnoreCase))
+            {
+                _log.Info($"收到配置导入确认: {line}");
+                if (_cfgResponseWaiter != null && !_cfgResponseWaiter.Task.IsCompleted)
+                {
+                    _cfgResponseWaiter.TrySetResult(line);
+                }
+            }
+            else
+            {
+                _log.Info($"配置命令: {line}");
+            }
             return;
         }
     }
@@ -727,6 +799,44 @@ internal sealed class SerialWorker
             {
                 _log.Info($"串口发送失败: {ex.Message}");
             }
+        }
+    }
+
+    /// <summary>
+    /// 发送命令并等待 CFG SET 响应
+    /// </summary>
+    public async Task<string?> SendAndWaitForCfgResponseAsync(string command, int timeoutMs = 3000)
+    {
+        _cfgResponseWaiter = new TaskCompletionSource<string>();
+        
+        try
+        {
+            SendLine(command);
+            
+            // 使用超时等待响应
+            var result = await Task.WhenAny(
+                _cfgResponseWaiter.Task,
+                Task.Delay(timeoutMs)
+            );
+            
+            if (result == _cfgResponseWaiter.Task)
+            {
+                return _cfgResponseWaiter.Task.Result;
+            }
+            else
+            {
+                _log.Info($"等待 CFG 响应超时 ({timeoutMs}ms)");
+                return null;
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.Info($"等待 CFG 响应出错: {ex.Message}");
+            return null;
+        }
+        finally
+        {
+            _cfgResponseWaiter = null;
         }
     }
 
@@ -935,6 +1045,82 @@ internal sealed class Logger
     }
 }
 
+/// <summary>
+/// 应用程序状态持久化管理类
+/// 存储位置: %APPDATA%\SongLed\SongLedPc\appstate.json
+/// 存储内容: 最后连接端口、窗口位置、用户偏好等
+/// </summary>
+internal sealed class AppState
+{
+    private static readonly string StateDir = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "SongLed", "SongLedPc"
+    );
+    
+    private static readonly string StateFile = Path.Combine(StateDir, "appstate.json");
+    
+    public string? LastPort { get; set; }
+    public DateTime LastConnected { get; set; }
+    public bool RememberLastPort { get; set; } = true;
+    public string? Theme { get; set; }
+    public Dictionary<string, string> UserPreferences { get; set; } = new();
+
+    public static AppState Load()
+    {
+        try
+        {
+            if (File.Exists(StateFile))
+            {
+                var json = File.ReadAllText(StateFile, Encoding.UTF8);
+                var state = JsonSerializer.Deserialize<AppState>(json);
+                return state ?? new AppState();
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Failed to load app state: {ex.Message}");
+        }
+        
+        return new AppState();
+    }
+
+    public void Save()
+    {
+        try
+        {
+            Directory.CreateDirectory(StateDir);
+            
+            var options = new JsonSerializerOptions 
+            { 
+                WriteIndented = true,
+                DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+            };
+            
+            var json = JsonSerializer.Serialize(this, options);
+            File.WriteAllText(StateFile, json, Encoding.UTF8);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Failed to save app state: {ex.Message}");
+        }
+    }
+    
+    public void Clear()
+    {
+        try
+        {
+            if (File.Exists(StateFile))
+            {
+                File.Delete(StateFile);
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Failed to clear app state: {ex.Message}");
+        }
+    }
+}
+
 internal static class AutoStart
 {
     private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -996,4 +1182,77 @@ internal enum ERole
     eConsole = 0,
     eMultimedia = 1,
     eCommunications = 2
+}
+/// <summary>
+/// 进度窗口 - 显示配置写入进度
+/// </summary>
+internal sealed class ProgressForm : Form
+{
+    private readonly Label _messageLabel;
+    private readonly ProgressBar _progressBar;
+
+    public ProgressForm(string title, string message)
+    {
+        Text = title;
+        Width = 400;
+        Height = 150;
+        StartPosition = FormStartPosition.CenterScreen;
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        MaximizeBox = false;
+        MinimizeBox = false;
+        TopMost = true;
+        ControlBox = false; // 禁止关闭按钮
+
+        _messageLabel = new Label
+        {
+            Text = message,
+            Dock = DockStyle.Top,
+            Height = 40,
+            TextAlign = ContentAlignment.MiddleCenter,
+            Margin = new Padding(10)
+        };
+
+        _progressBar = new ProgressBar
+        {
+            Dock = DockStyle.Fill,
+            Style = ProgressBarStyle.Marquee,
+            MarqueeAnimationSpeed = 30,
+            Height = 30,
+            Margin = new Padding(10)
+        };
+
+        Controls.Add(_messageLabel);
+        Controls.Add(_progressBar);
+    }
+
+    public void UpdateMessage(string message)
+    {
+        if (InvokeRequired)
+        {
+            Invoke(new Action(() => _messageLabel.Text = message));
+        }
+        else
+        {
+            _messageLabel.Text = message;
+        }
+    }
+
+    public void SetDeterminateProgress(int value, int max = 100)
+    {
+        if (InvokeRequired)
+        {
+            Invoke(new Action(() =>
+            {
+                _progressBar.Style = ProgressBarStyle.Continuous;
+                _progressBar.Maximum = max;
+                _progressBar.Value = Math.Min(value, max);
+            }));
+        }
+        else
+        {
+            _progressBar.Style = ProgressBarStyle.Continuous;
+            _progressBar.Maximum = max;
+            _progressBar.Value = Math.Min(value, max);
+        }
+    }
 }

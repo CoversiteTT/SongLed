@@ -316,6 +316,7 @@ internal sealed class SmtcBridge : IDisposable
             _log.Info($"SMTC state: {info.PlaybackStatus}");
             if (info.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Stopped)
             {
+                _serial.SendLine("LRC CLR");
                 _serial.SendLine("NP CLR");
             }
         }

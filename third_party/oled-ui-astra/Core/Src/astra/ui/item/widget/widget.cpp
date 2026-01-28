@@ -171,7 +171,7 @@ void Slider::renderIndicator(float _x, float _y, const std::vector<float> &_came
     unit = "%";
   } else if (title.find("SPI") != std::string::npos) {
     unit = " MHz";
-  } else if (title.find("Speed") != std::string::npos) {
+  } else if (title.find("UI Speed") != std::string::npos) {
     unit = "x";
   } else if (title.find("Sel") != std::string::npos) {
     displayValue = mapSelSpeedMs(value);
@@ -182,6 +182,24 @@ void Slider::renderIndicator(float _x, float _y, const std::vector<float> &_came
   } else if (title.find("Color") != std::string::npos) {
     displayValue = static_cast<int>(std::round(static_cast<float>(value) * 360.0f / 50.0f));
     unit = " deg";
+  } else if (title.find("Scroll") != std::string::npos) {
+    // Scroll Time: 1-50 maps to 100-15000 ms
+    displayValue = static_cast<int>(100.0f + (static_cast<float>(value) - 1.0f) * (14900.0f / 49.0f));
+    unit = " ms";
+  } else if (title.find("Close") != std::string::npos) {
+    // Close: 0->INSTANT, 1-59->200-11800ms, 60->DISABLED
+    if (value == 0) {
+      displayValue = 0;
+      unit = "INSTANT";
+    } else if (value >= 60) {
+      unit = "DISABLED";
+      displayValue = 0;
+    } else {
+      displayValue = static_cast<int>((value - 1) * 200 + 200);
+      unit = " ms";
+    }
+  } else if (title.find("CPS") != std::string::npos) {
+    unit = " cps";
   }
 
   std::string valText = std::to_string(displayValue) + unit;

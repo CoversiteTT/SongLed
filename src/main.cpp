@@ -53,6 +53,7 @@ List *wrapPauseItem = nullptr;
 List *fontColorItem = nullptr;
 List *scrollTimeItem = nullptr;
 List *lyricScrollItem = nullptr;
+List *cfgMsgAutoCloseItem = nullptr;
 
 Slider *volumeSlider = nullptr;
 CheckBox *muteCheck = nullptr;
@@ -71,6 +72,7 @@ Slider *wrapPauseSlider = nullptr;
 Slider *fontColorSlider = nullptr;
 Slider *scrollTimeSlider = nullptr;
 Slider *lyricScrollSlider = nullptr;
+Slider *cfgMsgAutoCloseSlider = nullptr;
 
 uint8_t volumeValue = 50;
 bool muteState = false;
@@ -96,6 +98,9 @@ bool scrollTimeDirty = false;
 uint8_t lyricScrollCpsValue = 8;
 uint8_t lyricScrollCpsPending = 8;
 bool lyricScrollCpsDirty = false;
+uint16_t cfgMsgAutoCloseMs = 5000;
+uint16_t cfgMsgAutoCloseMsPending = 5000;
+bool cfgMsgAutoCloseMsDirty = false;
 
 bool speakersLoading = false;
 int speakerCurrentId = -1;
@@ -171,6 +176,7 @@ enum AppMode {
   MODE_COLOR_ADJUST,
   MODE_SCROLL_ADJUST,
   MODE_LYRIC_SCROLL_ADJUST,
+  MODE_CFG_CLOSE_ADJUST,
   MODE_TEST_PATTERN,
 };
 
@@ -187,6 +193,7 @@ enum AdjustTarget {
   ADJ_FONT_COLOR,
   ADJ_SCROLL_TIME,
   ADJ_LYRIC_SCROLL_CPS,
+  ADJ_CFG_CLOSE,
 };
 
 AdjustTarget adjustTarget = ADJ_NONE;
@@ -206,6 +213,8 @@ void applySelectorSpeed();
 void applyWrapPause();
 void applyScrollDuration();
 void applyLyricScrollSpeed();
+uint8_t mapCfgCloseFromMs(uint16_t ms);
+uint16_t mapCfgCloseMs(uint8_t value);
 float mapHueDeg(uint8_t value);
 uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b);
 uint16_t hueToRgb565(uint8_t value);
@@ -375,6 +384,10 @@ void updateSettingsWidgets() {
   if (lyricScrollSlider) {
     lyricScrollSlider->value = lyricScrollCpsPending;
     lyricScrollSlider->init();
+  }
+  if (cfgMsgAutoCloseSlider) {
+    cfgMsgAutoCloseSlider->value = mapCfgCloseFromMs(cfgMsgAutoCloseMsPending);
+    cfgMsgAutoCloseSlider->init();
   }
 }
 
@@ -801,6 +814,15 @@ void handleConfirm(Menu *current) {
       adjustTarget = ADJ_LYRIC_SCROLL_CPS;
       return;
     }
+    if (selected == cfgMsgAutoCloseItem) {
+      appMode = MODE_CFG_CLOSE_ADJUST;
+      cfgMsgAutoCloseMsPending = cfgMsgAutoCloseMs;
+      cfgMsgAutoCloseMsDirty = false;
+      updateSettingsWidgets();
+      adjustActive = true;
+      adjustTarget = ADJ_CFG_CLOSE;
+      return;
+    }
   }
 }
 
@@ -817,8 +839,9 @@ void handleKeyEvents() {
   bool adjustColor = (appMode == MODE_COLOR_ADJUST);
   bool adjustScroll = (appMode == MODE_SCROLL_ADJUST);
   bool adjustLyricScroll = (appMode == MODE_LYRIC_SCROLL_ADJUST);
+  bool adjustCfgClose = (appMode == MODE_CFG_CLOSE_ADJUST);
   bool adjustTest = (appMode == MODE_TEST_PATTERN);
-  bool adjustMode = adjustActive && (adjustVolume || adjustSpi || adjustUi || adjustSel || adjustWrap || adjustColor || adjustScroll || adjustLyricScroll || adjustTest);
+  bool adjustMode = adjustActive && (adjustVolume || adjustSpi || adjustUi || adjustSel || adjustWrap || adjustColor || adjustScroll || adjustLyricScroll || adjustCfgClose || adjustTest);
   static uint32_t lastStepMs = 0;
 
   auto stepForSpeed = [&](uint32_t nowMs) -> int {
@@ -876,6 +899,15 @@ void handleKeyEvents() {
         else lyricScrollCpsPending = 1;
         lyricScrollCpsDirty = true;
         updateSettingsWidgets();
+      } else if (adjustCfgClose) {
+        uint16_t decrement = static_cast<uint16_t>(200 * step);
+        if (cfgMsgAutoCloseMsPending >= decrement) {
+          cfgMsgAutoCloseMsPending = static_cast<uint16_t>(cfgMsgAutoCloseMsPending - decrement);
+        } else {
+          cfgMsgAutoCloseMsPending = 0;
+        }
+        cfgMsgAutoCloseMsDirty = true;
+        updateSettingsWidgets();
       }
     } else if (launcher.getSelector()) {
       launcher.getSelector()->goPreview();
@@ -925,6 +957,18 @@ void handleKeyEvents() {
         else lyricScrollCpsPending = 30;
         lyricScrollCpsDirty = true;
         updateSettingsWidgets();
+      } else if (adjustCfgClose) {
+        uint16_t increment = static_cast<uint16_t>(200 * step);
+        if (cfgMsgAutoCloseMsPending == 0) {
+          cfgMsgAutoCloseMsPending = increment;
+        } else if (cfgMsgAutoCloseMsPending < 11800) {
+          cfgMsgAutoCloseMsPending = static_cast<uint16_t>(cfgMsgAutoCloseMsPending + increment);
+          if (cfgMsgAutoCloseMsPending > 11800) cfgMsgAutoCloseMsPending = 11800;
+        } else {
+          cfgMsgAutoCloseMsPending = 65535;
+        }
+        cfgMsgAutoCloseMsDirty = true;
+        updateSettingsWidgets();
       }
     } else if (launcher.getSelector()) {
       launcher.getSelector()->goNext();
@@ -965,6 +1009,10 @@ void handleKeyEvents() {
       if (adjustLyricScroll && lyricScrollCpsDirty) {
         lyricScrollCpsValue = lyricScrollCpsPending;
         applyLyricScrollSpeed();
+        saveSettings();
+      }
+      if (adjustCfgClose && cfgMsgAutoCloseMsDirty) {
+        cfgMsgAutoCloseMs = cfgMsgAutoCloseMsPending;
         saveSettings();
       }
       if (adjustTest) {
@@ -1013,6 +1061,10 @@ void handleKeyEvents() {
       if (adjustLyricScroll && lyricScrollCpsDirty) {
         lyricScrollCpsValue = lyricScrollCpsPending;
         applyLyricScrollSpeed();
+        saveSettings();
+      }
+      if (adjustCfgClose && cfgMsgAutoCloseMsDirty) {
+        cfgMsgAutoCloseMs = cfgMsgAutoCloseMsPending;
         saveSettings();
       }
       if (adjustTest) {
@@ -1117,6 +1169,11 @@ void buildMenus() {
   lyricScrollItem = new List("Lyric Speed");
   lyricScrollSlider = new Slider("CPS", 1, 30, 1, lyricScrollCpsValue);
   menuSettings->addItem(lyricScrollItem, lyricScrollSlider);
+  
+  cfgMsgAutoCloseItem = new List("Auto Close Msg");
+  uint8_t cfgCloseInitVal = mapCfgCloseFromMs(cfgMsgAutoCloseMs);
+  cfgMsgAutoCloseSlider = new Slider("Close", 0, 60, 1, cfgCloseInitVal);
+  menuSettings->addItem(cfgMsgAutoCloseItem, cfgMsgAutoCloseSlider);
 
   updateVolumeWidgets();
   updateMuteWidgets();
@@ -1224,6 +1281,20 @@ uint16_t hueToRgb565(uint8_t value) {
   uint8_t gg = static_cast<uint8_t>(std::round(g * 255.0f));
   uint8_t bb = static_cast<uint8_t>(std::round(b * 255.0f));
   return rgb565(rr, gg, bb);
+}
+
+uint8_t mapCfgCloseFromMs(uint16_t ms) {
+  if (ms >= 65535) return 60;
+  if (ms == 0) return 0;
+  if (ms < 200) return 1;
+  if (ms > 11800) return 59;
+  return static_cast<uint8_t>(1 + ms / 200);
+}
+
+uint16_t mapCfgCloseMs(uint8_t value) {
+  if (value == 0) return 0;
+  if (value >= 60) return 65535;
+  return static_cast<uint16_t>((value - 1) * 200 + 200);
 }
 
 int countUtf8Glyphs(const std::string &text) {
@@ -1648,43 +1719,48 @@ void renderAdjustScreen() {
     minText = "1 MHz";
     maxText = "80 MHz";
   } else if (adjustTarget == ADJ_UI_SPEED) {
-    targetValue = static_cast<float>(uiSpeedPending);
-    minValue = 1.0f;
-    maxValue = 50.0f;
+    float mappedValue = mapUiSpeedScale(uiSpeedPending);
+    targetValue = mappedValue;
+    minValue = mapUiSpeedScale(1);
+    maxValue = mapUiSpeedScale(50);
     label = "UI SPEED";
-    valueText = std::to_string(static_cast<int>(std::round(mapUiSpeedScale(uiSpeedPending)))) + "x";
+    valueText = std::to_string(static_cast<int>(std::round(mappedValue))) + "x";
     minText = "1x";
     maxText = "50x";
   } else if (adjustTarget == ADJ_SEL_SPEED) {
-    targetValue = static_cast<float>(selSpeedPending);
-    minValue = 1.0f;
-    maxValue = 50.0f;
+    float mappedValue = mapSelSpeedMs(selSpeedPending);
+    targetValue = mappedValue;
+    minValue = mapSelSpeedMs(1);
+    maxValue = mapSelSpeedMs(50);
     label = "SEL SPEED";
-    valueText = std::to_string(static_cast<int>(std::round(mapSelSpeedMs(selSpeedPending)))) + " ms";
+    valueText = std::to_string(static_cast<int>(std::round(mappedValue))) + " ms";
     minText = "900 ms";
     maxText = "20 ms";
   } else if (adjustTarget == ADJ_WRAP_PAUSE) {
-    targetValue = static_cast<float>(wrapPausePending);
-    minValue = 0.0f;
-    maxValue = 50.0f;
+    float mappedValue = mapWrapPauseMs(wrapPausePending);
+    targetValue = mappedValue;
+    minValue = mapWrapPauseMs(0);
+    maxValue = mapWrapPauseMs(50);
     label = "WRAP PAUSE";
-    valueText = std::to_string(static_cast<int>(std::round(mapWrapPauseMs(wrapPausePending)))) + " ms";
+    valueText = std::to_string(static_cast<int>(std::round(mappedValue))) + " ms";
     minText = "0 ms";
     maxText = "1000 ms";
   } else if (adjustTarget == ADJ_FONT_COLOR) {
-    targetValue = static_cast<float>(fontColorPending);
-    minValue = 0.0f;
-    maxValue = 50.0f;
+    float mappedValue = mapHueDeg(fontColorPending);
+    targetValue = mappedValue;
+    minValue = mapHueDeg(0);
+    maxValue = mapHueDeg(50);
     label = "FONT COLOR";
-    valueText = std::to_string(static_cast<int>(std::round(mapHueDeg(fontColorPending)))) + " deg";
+    valueText = std::to_string(static_cast<int>(std::round(mappedValue))) + " deg";
     minText = "0 deg";
     maxText = "360 deg";
   } else if (adjustTarget == ADJ_SCROLL_TIME) {
-    targetValue = static_cast<float>(scrollTimePending);
-    minValue = 1.0f;
-    maxValue = 50.0f;
+    float mappedValue = mapScrollMs(scrollTimePending);
+    targetValue = mappedValue;
+    minValue = mapScrollMs(1);
+    maxValue = mapScrollMs(50);
     label = "SCROLL TIME";
-    valueText = std::to_string(static_cast<int>(std::round(mapScrollMs(scrollTimePending)))) + " ms";
+    valueText = std::to_string(static_cast<int>(std::round(mappedValue))) + " ms";
     minText = "100 ms";
     maxText = "15000 ms";
   } else if (adjustTarget == ADJ_LYRIC_SCROLL_CPS) {
@@ -1695,6 +1771,24 @@ void renderAdjustScreen() {
     valueText = std::to_string(static_cast<int>(std::round(targetValue))) + " cps";
     minText = "1 cps";
     maxText = "30 cps";
+  } else if (adjustTarget == ADJ_CFG_CLOSE) {
+    targetValue = static_cast<float>(cfgMsgAutoCloseMsPending);
+    // 对于禁用值(65535)，限制targetValue为maxValue以保证progress ≤ 1.0
+    if (cfgMsgAutoCloseMsPending >= 65535) {
+      targetValue = 11800.0f;
+    }
+    minValue = 0.0f;
+    maxValue = 11800.0f;
+    label = "AUTO CLOSE MSG";
+    if (cfgMsgAutoCloseMsPending == 0) {
+      valueText = "INSTANT";
+    } else if (cfgMsgAutoCloseMsPending >= 65535) {
+      valueText = "DISABLED";
+    } else {
+      valueText = std::to_string(cfgMsgAutoCloseMsPending) + " ms";
+    }
+    minText = "0 ms";
+    maxText = "DISABLED";
   }
 
   if (adjustTarget != lastTarget) {
@@ -1713,17 +1807,25 @@ void renderAdjustScreen() {
   } else if (adjustTarget == ADJ_SPI) {
     valueText = std::to_string(static_cast<int>(std::round(shownValue))) + " MHz";
   } else if (adjustTarget == ADJ_UI_SPEED) {
-    valueText = std::to_string(static_cast<int>(std::round(mapUiSpeedScale(static_cast<uint8_t>(shownValue))))) + "x";
+    valueText = std::to_string(static_cast<int>(std::round(shownValue))) + "x";
   } else if (adjustTarget == ADJ_SEL_SPEED) {
-    valueText = std::to_string(static_cast<int>(std::round(mapSelSpeedMs(static_cast<uint8_t>(shownValue))))) + " ms";
+    valueText = std::to_string(static_cast<int>(std::round(shownValue))) + " ms";
   } else if (adjustTarget == ADJ_WRAP_PAUSE) {
-    valueText = std::to_string(static_cast<int>(std::round(mapWrapPauseMs(static_cast<uint8_t>(shownValue))))) + " ms";
+    valueText = std::to_string(static_cast<int>(std::round(shownValue))) + " ms";
   } else if (adjustTarget == ADJ_FONT_COLOR) {
-    valueText = std::to_string(static_cast<int>(std::round(mapHueDeg(static_cast<uint8_t>(shownValue))))) + " deg";
+    valueText = std::to_string(static_cast<int>(std::round(shownValue))) + " deg";
   } else if (adjustTarget == ADJ_SCROLL_TIME) {
-    valueText = std::to_string(static_cast<int>(std::round(mapScrollMs(static_cast<uint8_t>(shownValue))))) + " ms";
+    valueText = std::to_string(static_cast<int>(std::round(shownValue))) + " ms";
   } else if (adjustTarget == ADJ_LYRIC_SCROLL_CPS) {
     valueText = std::to_string(static_cast<int>(std::round(shownValue))) + " cps";
+  } else if (adjustTarget == ADJ_CFG_CLOSE) {
+    if (shownValue <= 0.5f) {
+      valueText = "INSTANT";
+    } else if (shownValue >= 65534.5f) {
+      valueText = "DISABLED";
+    } else {
+      valueText = std::to_string(static_cast<int>(std::round(shownValue))) + " ms";
+    }
   }
 
   float enterOffset = (1.0f - enterProgress) * 18.0f;
@@ -1776,6 +1878,9 @@ void renderAdjustScreen() {
   } else if (adjustTarget == ADJ_LYRIC_SCROLL_CPS) {
     help1 = "\u6b4c\u8bcd\u6eda\u52a8\u901f\u5ea6";
     help2 = "\u5355\u4f4d: \u5b57/\u79d2";
+  } else if (adjustTarget == ADJ_CFG_CLOSE) {
+    help1 = "\u914d\u7f6e\u5bfc\u5165\u4fe1\u606f\u81ea\u52a8\u5173\u95ed";
+    help2 = "0=\u7acb\u5373 60=\u7981\u7528";
   }
 
   if (!help1.empty()) {

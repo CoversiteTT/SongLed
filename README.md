@@ -364,6 +364,14 @@ HELLO OK
 
 ---
 
+## 开发规范
+
+修改固件前必读: [docs/ARC_ADJUST_UI_SPEC.md](docs/ARC_ADJUST_UI_SPEC.md)
+
+参数调节界面标准化实现：变量三件套、Slider显示实际单位值、圆弧中心数值与进度同步。
+
+---
+
 ## License
 
 GNU General Public License v3.0 - [LICENSE](LICENSE)
