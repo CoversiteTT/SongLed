@@ -1,0 +1,3 @@
+pyserial
+comtypes
+pycaw
