@@ -21,8 +21,52 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        // Check .NET 8 requirement
+        if (!CheckDotNetVersion())
+        {
+            return;
+        }
+
         ApplicationConfiguration.Initialize();
         Application.Run(new TrayAppContext(args));
+    }
+
+    private static bool CheckDotNetVersion()
+    {
+        var version = Environment.Version;
+        if (version.Major >= 8)
+        {
+            return true; // .NET 8 or later available
+        }
+
+        // .NET 8 not found, show dialog
+        var result = MessageBox.Show(
+            ".NET 8 runtime is required but not installed.\r\n\r\n" +
+            "Click OK to open the download page, or Cancel to exit.",
+            "Missing .NET 8 Runtime",
+            MessageBoxButtons.OKCancel,
+            MessageBoxIcon.Information
+        );
+
+        if (result == DialogResult.OK)
+        {
+            try
+            {
+                // Open download page
+                var url = "https://dotnet.microsoft.com/en-us/download/dotnet/8.0";
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = url,
+                    UseShellExecute = true
+                });
+            }
+            catch
+            {
+                MessageBox.Show("Could not open browser. Please visit:\nhttps://dotnet.microsoft.com/en-us/download/dotnet/8.0", "Download .NET 8");
+            }
+        }
+
+        return false;
     }
 }
 
