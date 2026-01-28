@@ -166,7 +166,6 @@ Menu items are defined in `src/main.cpp`:
 ## Handoff & Troubleshooting
 
 - `docs/HANDOFF.md` - Technical notes and key considerations
-- `RELEASE_CHECKLIST.md` - Pre-release verification checklist
 
 ## Third-party libraries and attributions
 
