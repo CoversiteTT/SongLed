@@ -167,3 +167,51 @@ Menu items are defined in `src/main.cpp`:
 
 ## Handoff & troubleshooting
 - `docs/HANDOFF.md` (交接稿 + 关键注意事项)
+- `RELEASE_CHECKLIST.md` (GitHub 发布前检查清单)
+
+## Third-party libraries and attributions
+
+This project incorporates and modifies the following third-party libraries:
+
+### 1. **oled-ui-astra** (UI Framework)
+- **Source**: https://github.com/dcfsswindy/oled-ui-astra
+- **License**: GNU General Public License v3.0 (GPLv3)
+- **Location**: `third_party/oled-ui-astra/`
+- **Usage**: Core UI framework adapted for ESP32-S3 with 2.4" TFT display
+- **Modifications**: Hardware abstraction layer, display integration, menu customization
+
+### 2. **U8G2** (Graphics Library)
+- **Source**: https://github.com/olikraus/u8g2
+- **License**: BSD 3-Clause License
+- **Location**: `third_party/oled-ui-astra/Core/Src/hal/hal_dreamCore/components/oled/graph_lib/u8g2/`
+- **Usage**: Graphics rendering, font support, display buffering
+- **Note**: Integrated as part of the oled-ui-astra framework
+
+### 3. **ZPIX Pixel Font**
+- **Source**: https://github.com/SolidZORO/zpix-pixel-font
+- **License**: OFL (Open Font License) 1.1
+- **Location**: Font data included in `u8g2_font_zpix.c`
+- **Usage**: Planned for lyrics display (currently not active in build)
+
+## License
+
+This project is licensed under the **GNU General Public License v3.0 (GPLv3)** to comply with the oled-ui-astra framework license.
+
+See [LICENSE](LICENSE) file for details.
+
+## PC Dependencies
+
+### C# version (SongLedPc)
+- NAudio 2.2.1 - Audio control (SMTC bridge)
+- Microsoft.Windows.SDK.NET - Windows API interop
+- System.Management - Device management
+- System.IO.Ports - Serial communication
+
+### C++ version (SongLedPcCpp)
+- Win32 API (ole32, oleaut32, uuid, setupapi, shell32, shlwapi)
+- System serial port communication (no external dependencies)
+
+### Python version (legacy)
+- PySerial - Serial communication
+
+All rights to third-party libraries are retained by their respective authors.
