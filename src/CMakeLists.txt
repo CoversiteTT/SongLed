@@ -18,6 +18,7 @@ idf_component_register(
         "main.cpp"
         "hal_astra_esp32.cpp"
         "astra_animation.cpp"
+        "ble_service.cpp"
         "u8g2_font_zpix.c"
         ${ASTRA_SRC}
         ${U8G2_SRC}
@@ -27,4 +28,7 @@ idf_component_register(
         "${ASTRA_DIR}/hal"
         "${ASTRA_DIR}/astra"
         "${U8G2_DIR}"
+    REQUIRES
+        bt
+        nvs_flash
 )

@@ -11,12 +11,17 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_log.h"
+#include "esp_system.h"
+#include "esp_chip_info.h"
+#include "esp_heap_caps.h"
+#include "esp_flash.h"
 
 #include "hal_astra_esp32.h"
 #include "astra/ui/launcher.h"
 #include "astra/ui/item/menu/menu.h"
 #include "astra/ui/item/widget/widget.h"
 #include "astra/config/config.h"
+#include "ble_service.h"
 
 using namespace astra;
 
@@ -24,6 +29,70 @@ namespace {
 constexpr bool SIMPLE_DISPLAY_ONLY = false;
 constexpr int UART_BAUD = 115200;
 constexpr const char *NVS_NAMESPACE = "songled";
+
+// Version Information
+constexpr const char *FIRMWARE_VERSION = "v0.0.2-beta";
+constexpr const char *BUILD_DATE = __DATE__;
+constexpr const char *BUILD_TIME = __TIME__;
+constexpr const char *CHANGELOG[] = {
+  "v0.0.2-beta:",
+  "  +BLE support",
+  "  +4bit test mode",
+  "  +About menu",
+  "v0.0.1:",
+  "  Initial release",
+  nullptr
+};
+
+struct AdjustStepState {
+  uint32_t lastStepMs = 0;
+  uint16_t fastMs = 60;
+  uint16_t midMs = 140;
+  float timeScale = 1.0f; // 加速度敏感度倍率(越小越敏感)
+  int fastStep = 5;
+  int midStep = 2;
+  int slowStep = 1;
+  int baseStep = 1; // 基础速度倍率
+};
+
+AdjustStepState g_adjustStep;
+
+int getAdjustStep(uint32_t nowMs) {
+  if (g_adjustStep.lastStepMs == 0) {
+    g_adjustStep.lastStepMs = nowMs;
+    return g_adjustStep.slowStep * g_adjustStep.baseStep;
+  }
+  uint32_t dt = nowMs - g_adjustStep.lastStepMs;
+  g_adjustStep.lastStepMs = nowMs;
+  uint32_t fastMs = static_cast<uint32_t>(g_adjustStep.fastMs * g_adjustStep.timeScale);
+  uint32_t midMs = static_cast<uint32_t>(g_adjustStep.midMs * g_adjustStep.timeScale);
+  if (fastMs < 10) fastMs = 10;
+  if (midMs < fastMs + 10) midMs = fastMs + 10;
+  if (dt <= fastMs) return g_adjustStep.fastStep * g_adjustStep.baseStep;
+  if (dt <= midMs) return g_adjustStep.midStep * g_adjustStep.baseStep;
+  return g_adjustStep.slowStep * g_adjustStep.baseStep;
+}
+
+void setAdjustBaseStep(int baseStep) {
+  if (baseStep < 1) baseStep = 1;
+  if (baseStep > 5) baseStep = 5;
+  g_adjustStep.baseStep = baseStep;
+}
+
+void setAdjustTimeScale(float scale) {
+  if (scale < 0.25f) scale = 0.25f;
+  if (scale > 2.0f) scale = 2.0f;
+  g_adjustStep.timeScale = scale;
+}
+
+// Communication mode
+enum CommMode {
+  COMM_USB,   // USB Serial
+  COMM_BLE,   // Bluetooth LE
+  COMM_AUTO   // Auto-detect
+};
+CommMode commMode = COMM_AUTO;
+bool bleEnabled = false;
 
 HALAstraESP32 hal;
 Launcher launcher;
@@ -34,6 +103,8 @@ List *menuOutput = nullptr;
 List *menuTest = nullptr;
 List *menuMute = nullptr;
 List *menuSettings = nullptr;
+List *menuAbout = nullptr;
+List *menuBluetooth = nullptr;
 
 List *outputRefreshItem = nullptr;
 List *testIoItem = nullptr;
@@ -54,6 +125,9 @@ List *fontColorItem = nullptr;
 List *scrollTimeItem = nullptr;
 List *lyricScrollItem = nullptr;
 List *cfgMsgAutoCloseItem = nullptr;
+List *bleEnableItem = nullptr;
+List *bleAdvItem = nullptr;
+List *bleDisconnectItem = nullptr;
 
 Slider *volumeSlider = nullptr;
 CheckBox *muteCheck = nullptr;
@@ -66,6 +140,7 @@ CheckBox *dmaCheck = nullptr;
 CheckBox *fbCheck = nullptr;
 CheckBox *psramCheck = nullptr;
 CheckBox *doubleBufferCheck = nullptr;
+CheckBox *bleEnableCheck = nullptr;
 Slider *uiSpeedSlider = nullptr;
 Slider *selSpeedSlider = nullptr;
 Slider *wrapPauseSlider = nullptr;
@@ -178,6 +253,7 @@ enum AppMode {
   MODE_LYRIC_SCROLL_ADJUST,
   MODE_CFG_CLOSE_ADJUST,
   MODE_TEST_PATTERN,
+  MODE_ABOUT_INFO,
 };
 
 AppMode appMode = MODE_NORMAL;
@@ -220,6 +296,7 @@ uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b);
 uint16_t hueToRgb565(uint8_t value);
 void applyFontColor();
 void renderTestPattern();
+void renderAboutInfo();
 void renderNowPlayingOverlay();
 bool loadSettings();
 void saveSettings();
@@ -242,9 +319,22 @@ void init_uart() {
 
 void sendLine(const char *line) {
   size_t len = strlen(line);
-  uart_write_bytes(UART_NUM_0, line, static_cast<int>(len));
-  uart_write_bytes(UART_NUM_0, "\n", 1);
-  txBytes += static_cast<uint32_t>(len + 1);
+  bool sent = false;
+  
+  // Try BLE first if enabled and connected
+  if (bleEnabled && ble_is_connected()) {
+    if (ble_send_line(line)) {
+      txBytes += static_cast<uint32_t>(len + 1);
+      sent = true;
+    }
+  }
+  
+  // Fallback to USB or use USB if not sent via BLE
+  if (!sent && commMode != COMM_BLE) {
+    uart_write_bytes(UART_NUM_0, line, static_cast<int>(len));
+    uart_write_bytes(UART_NUM_0, "\n", 1);
+    txBytes += static_cast<uint32_t>(len + 1);
+  }
 }
 
 void sendVolumeGet() { sendLine("VOL GET"); }
@@ -389,6 +479,10 @@ void updateSettingsWidgets() {
     cfgMsgAutoCloseSlider->value = mapCfgCloseFromMs(cfgMsgAutoCloseMsPending);
     cfgMsgAutoCloseSlider->init();
   }
+  if (bleEnableCheck) {
+    bleEnableCheck->value = bleEnabled;
+    bleEnableCheck->init();
+  }
 }
 
 void applyDisplayConfig() {
@@ -407,7 +501,7 @@ void applyDisplayConfig() {
   updateDisplayWidgets();
 }
 
-void handleLine(char *line) {
+extern "C" void handleLine(char *line) {
   lastRxMs = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL); // 更新接收时间
   
   // Debug: log all received lines
@@ -823,6 +917,59 @@ void handleConfirm(Menu *current) {
       adjustTarget = ADJ_CFG_CLOSE;
       return;
     }
+    if (selected == menuBluetooth) {
+      launcher.open();
+      return;
+    }
+    if (selected == menuAbout) {
+      // Display About info screen
+      appMode = MODE_ABOUT_INFO;
+      setAdjustBaseStep(5);
+      setAdjustTimeScale(0.25f);
+      adjustActive = true;
+      adjustTarget = ADJ_NONE;
+      return;
+    }
+  }
+
+  if (current == menuBluetooth) {
+    if (selected == bleEnableItem) {
+      bool next = bleEnableCheck->toggle();
+      if (next && !bleEnabled) {
+        if (ble_service_init("SongLed")) {
+          bleEnabled = true;
+          launcher.popInfo("BLE", 600);
+        } else {
+          bleEnabled = false;
+          bleEnableCheck->value = false;
+          launcher.popInfo("BLE Init Fail", 800);
+        }
+      } else if (!next && bleEnabled) {
+        ble_service_deinit();
+        bleEnabled = false;
+        launcher.popInfo("BLE Off", 600);
+      }
+      updateSettingsWidgets();
+      return;
+    }
+    if (selected == bleAdvItem) {
+      if (bleEnabled) {
+        ble_restart_advertising();
+        launcher.popInfo("Adv Restart", 600);
+      } else {
+        launcher.popInfo("BLE Off", 600);
+      }
+      return;
+    }
+    if (selected == bleDisconnectItem) {
+      if (bleEnabled) {
+        ble_disconnect();
+        launcher.popInfo("BLE Disc", 600);
+      } else {
+        launcher.popInfo("BLE Off", 600);
+      }
+      return;
+    }
   }
 }
 
@@ -841,25 +988,13 @@ void handleKeyEvents() {
   bool adjustLyricScroll = (appMode == MODE_LYRIC_SCROLL_ADJUST);
   bool adjustCfgClose = (appMode == MODE_CFG_CLOSE_ADJUST);
   bool adjustTest = (appMode == MODE_TEST_PATTERN);
-  bool adjustMode = adjustActive && (adjustVolume || adjustSpi || adjustUi || adjustSel || adjustWrap || adjustColor || adjustScroll || adjustLyricScroll || adjustCfgClose || adjustTest);
-  static uint32_t lastStepMs = 0;
-
-  auto stepForSpeed = [&](uint32_t nowMs) -> int {
-    if (lastStepMs == 0) {
-      lastStepMs = nowMs;
-      return 1;
-    }
-    uint32_t dt = nowMs - lastStepMs;
-    lastStepMs = nowMs;
-    if (dt <= 60) return 5;
-    if (dt <= 140) return 2;
-    return 1;
-  };
+  bool adjustAbout = (appMode == MODE_ABOUT_INFO);
+  bool adjustMode = adjustActive && (adjustVolume || adjustSpi || adjustUi || adjustSel || adjustWrap || adjustColor || adjustScroll || adjustLyricScroll || adjustCfgClose || adjustTest || adjustAbout);
 
   if (keys[key::KEY_0] == key::CLICK) {
     if (adjustMode) {
       uint32_t nowMs = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
-      int step = stepForSpeed(nowMs);
+      int step = getAdjustStep(nowMs);
       if (adjustVolume) {
         if (volumeValue >= step) volumeValue = static_cast<uint8_t>(volumeValue - step);
         updateVolumeWidgets();
@@ -908,6 +1043,14 @@ void handleKeyEvents() {
         }
         cfgMsgAutoCloseMsDirty = true;
         updateSettingsWidgets();
+      } else if (adjustAbout) {
+        // Scroll up
+        extern int aboutScrollOffset;
+        extern int aboutScrollTarget;
+        if (aboutScrollOffset > 0) {
+          aboutScrollTarget -= step * 2;
+          if (aboutScrollTarget < 0) aboutScrollTarget = 0;
+        }
       }
     } else if (launcher.getSelector()) {
       launcher.getSelector()->goPreview();
@@ -916,7 +1059,7 @@ void handleKeyEvents() {
   if (keys[key::KEY_1] == key::CLICK) {
     if (adjustMode) {
       uint32_t nowMs = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
-      int step = stepForSpeed(nowMs);
+      int step = getAdjustStep(nowMs);
       if (adjustVolume) {
         if (volumeValue + step <= 100) volumeValue = static_cast<uint8_t>(volumeValue + step);
         else volumeValue = 100;
@@ -969,6 +1112,15 @@ void handleKeyEvents() {
         }
         cfgMsgAutoCloseMsDirty = true;
         updateSettingsWidgets();
+      } else if (adjustAbout) {
+        // Scroll down
+        extern int aboutScrollOffset;
+        extern int aboutMaxScroll;
+        extern int aboutScrollTarget;
+        if (aboutScrollOffset < aboutMaxScroll) {
+          aboutScrollTarget += step * 2;
+          if (aboutScrollTarget > aboutMaxScroll) aboutScrollTarget = aboutMaxScroll;
+        }
       }
     } else if (launcher.getSelector()) {
       launcher.getSelector()->goNext();
@@ -1014,6 +1166,17 @@ void handleKeyEvents() {
       if (adjustCfgClose && cfgMsgAutoCloseMsDirty) {
         cfgMsgAutoCloseMs = cfgMsgAutoCloseMsPending;
         saveSettings();
+      }
+      if (adjustAbout) {
+        // exit about info, reset scroll
+        extern int aboutScrollOffset;
+        extern int aboutScrollTarget;
+        extern float aboutScrollPos;
+        aboutScrollOffset = 0;
+        aboutScrollTarget = 0;
+        aboutScrollPos = 0.0f;
+        setAdjustBaseStep(1);
+        setAdjustTimeScale(1.0f);
       }
       if (adjustTest) {
         // exit test pattern
@@ -1069,6 +1232,17 @@ void handleKeyEvents() {
       }
       if (adjustTest) {
         // exit test pattern
+      }
+      if (adjustAbout) {
+        // exit about info, reset scroll
+        extern int aboutScrollOffset;
+        extern int aboutScrollTarget;
+        extern float aboutScrollPos;
+        aboutScrollOffset = 0;
+        aboutScrollTarget = 0;
+        aboutScrollPos = 0.0f;
+        setAdjustBaseStep(1);
+        setAdjustTimeScale(1.0f);
       }
       appMode = MODE_NORMAL;
       adjustActive = false;
@@ -1174,6 +1348,21 @@ void buildMenus() {
   uint8_t cfgCloseInitVal = mapCfgCloseFromMs(cfgMsgAutoCloseMs);
   cfgMsgAutoCloseSlider = new Slider("Close", 0, 60, 1, cfgCloseInitVal);
   menuSettings->addItem(cfgMsgAutoCloseItem, cfgMsgAutoCloseSlider);
+
+  // Bluetooth menu
+  menuBluetooth = new List("Bluetooth");
+  bleEnableItem = new List("Enable BLE");
+  bleAdvItem = new List("Restart Adv");
+  bleDisconnectItem = new List("Disconnect");
+  bleEnableCheck = new CheckBox(bleEnabled);
+  menuBluetooth->addItem(bleEnableItem, bleEnableCheck);
+  menuBluetooth->addItem(bleAdvItem);
+  menuBluetooth->addItem(bleDisconnectItem);
+  menuSettings->addItem(menuBluetooth);
+  
+  // About menu
+  menuAbout = new List("About");
+  menuSettings->addItem(menuAbout);
 
   updateVolumeWidgets();
   updateMuteWidgets();
@@ -1558,7 +1747,7 @@ void renderNowPlayingOverlay() {
       char remainText[16];
       snprintf(remainText, sizeof(remainText), "-%d:%02d", min, sec);
       std::string remainStr = remainText;
-      int remainW = HAL::getFontWidth(remainStr);
+      // int remainW = HAL::getFontWidth(remainStr);  // Currently unused
       int remainY = coverY + cover + HAL::getFontHeight();
       int maxY = barY - 2;
       if (remainY > maxY) remainY = maxY;
@@ -1940,23 +2129,236 @@ void renderTestPattern() {
   int h = sys.screenHeight;
   if (w <= 0 || h <= 0) return;
   HAL::setDrawType(1);
+  
   static const uint8_t BAYER4[4][4] = {
       {0, 8, 2, 10},
       {12, 4, 14, 6},
       {3, 11, 1, 9},
       {15, 7, 13, 5}};
-
+  
+  static uint32_t waveTime = 0;
+  waveTime++;
+  
+  // Draw full screen with improved grayscale noise
   for (int y = 0; y < h; ++y) {
     for (int x = 0; x < w; ++x) {
-      int level = (x * 16) / w;
-      if (level > BAYER4[y & 3][x & 3]) {
+      // Multiple independent hash streams with different weights
+      uint32_t h1 = (x * 73 + y * 97);
+      h1 = h1 ^ (waveTime * (h1 >> 16));
+      h1 = (h1 * 1664525U + 1013904223U);
+      
+      uint32_t h2 = (x * 131 + y * 181) ^ ((waveTime >> 2) * 7919);
+      h2 = (h2 * 1103515245U + 12345U);
+      
+      uint32_t h3 = ((x ^ (y * 3)) * 37 + waveTime * 11);
+      h3 = (h3 * 1103515245U + 12345U);
+      
+      uint32_t h4 = ((x * 19) ^ (y * 23)) ^ ((waveTime * 17) >> 1);
+      h4 = (h4 * 1664525U + 1013904223U);
+      
+      // Small region-based motion to break up grid
+      int smallRegionX = x >> 3;
+      int smallRegionY = y >> 3;
+      uint32_t regionDrift = ((smallRegionX * 7) ^ (smallRegionY * 11)) * waveTime;
+      
+      // Combine all sources for full 16-level grayscale
+      uint32_t combined = 0;
+      combined += (h1 & 0x0F);
+      combined += ((h2 >> 4) & 0x0F);
+      combined += ((h3 >> 8) & 0x0F);
+      combined += ((h4 >> 12) & 0x0F);
+      combined += ((regionDrift >> 2) & 0x0F);
+      
+      // Average to get grayscale in 0-15 range
+      int level = ((combined >> 2) + (combined >> 3)) & 0x0F;
+      
+      // Additional per-pixel dithering
+      int ditherThreshold = BAYER4[y & 3][x & 3];
+      if ((level << 1) > ditherThreshold) {
         HAL::drawPixel(static_cast<float>(x), static_cast<float>(y));
       }
     }
   }
-  HAL::drawEnglish(2, HAL::getFontHeight(), "4BIT TEST");
+  
+  HAL::drawEnglish(2, HAL::getFontHeight(), "4BIT WAVE");
 }
-}  // namespace
+
+// Scroll state for About menu
+int aboutScrollOffset = 0;
+int aboutMaxScroll = 0;
+int aboutScrollTarget = 0;
+float aboutScrollPos = 0.0f;
+
+void renderAboutInfo() {
+  HAL::canvasClear();
+  auto &sys = HAL::getSystemConfig();
+  auto &astraConfig = getUIConfig();
+  int w = sys.screenWeight;
+  int h = sys.screenHeight;
+  if (w <= 0 || h <= 0) return;
+  
+  HAL::setDrawType(1); // Use anti-aliased rendering like adjust screen
+  
+  aboutScrollOffset = static_cast<int>(std::round(aboutScrollPos));
+  int lineHeight = HAL::getFontHeight() + 1;
+  int startY = 4 - aboutScrollOffset;
+  int y = startY;
+  int contentX = 2;
+  float scrollBarW = astraConfig.listBarWeight;
+  if (scrollBarW < 1.0f) scrollBarW = 1.0f;
+  float scrollBarX = static_cast<float>(w) - scrollBarW;
+  int footerHeight = lineHeight + 4;
+  int viewHeight = h - footerHeight;
+
+  auto drawLine = [&](const std::string &text, int extraGap = 0) {
+    if (y >= -lineHeight && y < h) {
+      HAL::drawEnglish(contentX, y, text);
+    }
+    y += lineHeight + extraGap;
+  };
+
+  auto chipModelName = [](esp_chip_model_t model) -> const char * {
+    switch (model) {
+      case CHIP_ESP32: return "ESP32";
+      case CHIP_ESP32S2: return "ESP32-S2";
+      case CHIP_ESP32S3: return "ESP32-S3";
+      case CHIP_ESP32C3: return "ESP32-C3";
+      case CHIP_ESP32C2: return "ESP32-C2";
+      case CHIP_ESP32C6: return "ESP32-C6";
+      case CHIP_ESP32H2: return "ESP32-H2";
+      default: return "ESP32";
+    }
+  };
+  
+  // Title
+  drawLine("SongLed", 2);
+
+  // Version
+  char buf[96];
+  snprintf(buf, sizeof(buf), "Ver: %s", FIRMWARE_VERSION);
+  drawLine(buf);
+
+  // Build date/time
+  snprintf(buf, sizeof(buf), "Built: %s %s", BUILD_DATE, BUILD_TIME);
+  drawLine(buf);
+
+  // Connection status
+  if (bleEnabled && ble_is_connected()) {
+    drawLine("Conn: BLE");
+  } else if (handshakeOk) {
+    drawLine("Conn: USB");
+  } else {
+    drawLine("Conn: None");
+  }
+  y += 3;
+
+  // System info
+  drawLine("System:");
+  esp_chip_info_t chipInfo;
+  esp_chip_info(&chipInfo);
+  snprintf(buf, sizeof(buf), "Chip: %s r%d", chipModelName(chipInfo.model), chipInfo.revision);
+  drawLine(buf);
+  snprintf(buf, sizeof(buf), "Cores: %d", chipInfo.cores);
+  drawLine(buf);
+  const char *wifiFlag = (chipInfo.features & CHIP_FEATURE_WIFI_BGN) ? "WiFi" : "-";
+  const char *btFlag = (chipInfo.features & CHIP_FEATURE_BT) ? "BT" : "-";
+  const char *bleFlag = (chipInfo.features & CHIP_FEATURE_BLE) ? "BLE" : "-";
+  snprintf(buf, sizeof(buf), "Feat: %s/%s/%s", wifiFlag, btFlag, bleFlag);
+  drawLine(buf);
+  snprintf(buf, sizeof(buf), "IDF: %s", esp_get_idf_version());
+  drawLine(buf);
+  snprintf(buf, sizeof(buf), "Display: %dx%d", w, h);
+  drawLine(buf);
+
+  uint32_t flashSize = 0;
+  if (esp_flash_get_size(nullptr, &flashSize) == ESP_OK) {
+    snprintf(buf, sizeof(buf), "Flash: %uMB", static_cast<unsigned>(flashSize / (1024 * 1024)));
+  } else {
+    snprintf(buf, sizeof(buf), "Flash: N/A");
+  }
+  drawLine(buf);
+
+  uint32_t freeHeap = esp_get_free_heap_size();
+  uint32_t minHeap = heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT);
+  snprintf(buf, sizeof(buf), "Heap: %u KB", static_cast<unsigned>(freeHeap / 1024));
+  drawLine(buf);
+  snprintf(buf, sizeof(buf), "Heap Min: %u KB", static_cast<unsigned>(minHeap / 1024));
+  drawLine(buf);
+  uint32_t psramFree = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+  snprintf(buf, sizeof(buf), "PSRAM: %u KB", static_cast<unsigned>(psramFree / 1024));
+  drawLine(buf);
+  const char *modeName = (commMode == COMM_USB) ? "USB" : (commMode == COMM_BLE) ? "BLE" : "AUTO";
+  snprintf(buf, sizeof(buf), "Mode: %s", modeName);
+  drawLine(buf);
+  snprintf(buf, sizeof(buf), "BLE Ena: %s", bleEnabled ? "Yes" : "No");
+  drawLine(buf);
+  snprintf(buf, sizeof(buf), "BLE Conn: %s", (bleEnabled && ble_is_connected()) ? "Yes" : "No");
+  drawLine(buf);
+  snprintf(buf, sizeof(buf), "USB Link: %s", handshakeOk ? "OK" : "None");
+  drawLine(buf, 2);
+  
+  // Divider line
+  if (y >= 0 && y < h) {
+    for (int x = contentX; x < w - 6; x++) {
+      HAL::drawPixel(static_cast<float>(x), static_cast<float>(y));
+    }
+  }
+  y += 4;
+  
+  // Changelog title
+  drawLine("Changelog:");
+  
+  // Display all changelog entries
+  for (int i = 0; CHANGELOG[i] != nullptr; i++) {
+    drawLine(CHANGELOG[i]);
+  }
+  
+  y += 4;
+  
+  // Calculate max scroll
+  int totalContentHeight = y - startY;
+  aboutMaxScroll = totalContentHeight - viewHeight;
+  if (aboutMaxScroll < 0) aboutMaxScroll = 0;
+  if (aboutScrollTarget > aboutMaxScroll) aboutScrollTarget = aboutMaxScroll;
+
+  float target = static_cast<float>(aboutScrollTarget);
+  float delta = target - aboutScrollPos;
+  aboutScrollPos += delta * 0.45f;
+  if (std::fabs(delta) < 0.5f) aboutScrollPos = target;
+  if (aboutScrollPos < 0.0f) aboutScrollPos = 0.0f;
+  if (aboutScrollPos > aboutMaxScroll) aboutScrollPos = static_cast<float>(aboutMaxScroll);
+  aboutScrollOffset = static_cast<int>(std::round(aboutScrollPos));
+  
+  // Draw scroll bar (similar to menu bar)
+  if (aboutMaxScroll > 0 && totalContentHeight > 0) {
+    float barX = scrollBarX;
+    float barW = scrollBarW;
+    int barAreaH = viewHeight;
+    if (barAreaH < 1) barAreaH = h;
+
+    // Calculate bar height based on scroll progress (menu-style)
+    float scrollProgress = static_cast<float>(aboutScrollOffset + viewHeight) / static_cast<float>(totalContentHeight);
+    int barHeight = static_cast<int>(scrollProgress * barAreaH);
+    if (barHeight < 8) barHeight = 8;
+    if (barHeight > barAreaH) barHeight = barAreaH;
+
+    // Draw indicator lines (same as menu)
+    HAL::drawHLine(scrollBarX, 0, scrollBarW);
+    HAL::drawHLine(scrollBarX, barAreaH - 1, scrollBarW);
+    HAL::drawVLine(static_cast<float>(w) - std::ceil(scrollBarW / 2.0f), 0, barAreaH);
+
+    // Draw bar
+    HAL::drawBox(barX, 0, barW, barHeight);
+  }
+  
+  // Footer
+  HAL::setDrawType(1);
+  int footerY = h - lineHeight - 2;
+  HAL::setDrawType(0);
+  HAL::drawBox(0, footerY - 2, w - 6, lineHeight + 4);
+  HAL::setDrawType(1);
+  HAL::drawEnglish(contentX, footerY, "K0:Up K1:Down K2:Exit");
+}
 
 extern "C" void app_main(void) {
   HAL::inject(&hal);
@@ -1998,6 +2400,27 @@ extern "C" void app_main(void) {
   uart_flush(UART_NUM_0); // 清空UART缓冲区
   lastRxMs = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
   lastHelloMs = lastRxMs;
+  
+  // Initialize BLE service
+  ESP_LOGI("MAIN", "Initializing BLE service...");
+  if (ble_service_init("SongLed")) {
+    bleEnabled = true;
+    ESP_LOGI("MAIN", "BLE service initialized successfully");
+    ble_set_connection_callback([](bool connected) {
+      if (connected) {
+        ESP_LOGI("MAIN", "BLE client connected");
+        handshakeOk = false;
+        syncedAfterHandshake = false;
+        sendHello();
+      } else {
+        ESP_LOGI("MAIN", "BLE client disconnected");
+        handshakeOk = false;
+      }
+    });
+  } else {
+    ESP_LOGI("MAIN", "BLE initialization failed, using USB only");
+    commMode = COMM_USB;
+  }
   
   if (liveHeartbeat) {
     sendLine("APP START");
@@ -2060,6 +2483,8 @@ extern "C" void app_main(void) {
     hal.clearBarOverlay();
     if (appMode == MODE_TEST_PATTERN) {
       renderTestPattern();
+    } else if (appMode == MODE_ABOUT_INFO) {
+      renderAboutInfo();
     } else {
       renderAdjustScreen();
     }
@@ -2114,3 +2539,5 @@ extern "C" void app_main(void) {
     vTaskDelay(pdMS_TO_TICKS(2));
   }
 }
+
+}  // namespace

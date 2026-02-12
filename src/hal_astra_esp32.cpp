@@ -760,9 +760,10 @@ uint16_t HALAstraESP32::getForegroundColor() const {
 
 void HALAstraESP32::encoder_task(void *arg) {
   auto *self = static_cast<HALAstraESP32 *>(arg);
+  const TickType_t delayTicks = std::max<TickType_t>(1, pdMS_TO_TICKS(10));
   while (self) {
     self->updateEncoder();
-    vTaskDelay(pdMS_TO_TICKS(2));
+    vTaskDelay(delayTicks);
   }
 }
 

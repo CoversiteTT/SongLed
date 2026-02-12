@@ -29,6 +29,7 @@ cmake-build-*/
 
 # Temporary and backup files
 backups/
+dist/
 *.bak
 *.tmp
 *~

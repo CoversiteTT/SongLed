@@ -1,6 +1,169 @@
 # SongLed - ESP32-S3 Volume Knob for Windows 11
 
-**Language**: [English](#english) | [日本語](#日本語) | [中文](#中文)
+**Language**: [中文](#中文) | [English](#english) | [日本語](#日本語)
+
+---
+
+# 中文
+
+## 概览
+
+基于 ESP32-S3、ST7789 2.4" TFT、EC11 旋钮的音量控制设备。通过 USB 串口与 Windows 11 通信。
+
+功能: 音量控制、音频设备切换、歌词显示、专辑封面。
+
+## 硬件接线
+
+**TFT (ST7789)**:
+- SCL → GPIO12
+- SDA → GPIO11
+- RES → GPIO7
+- DC → GPIO9
+- CS → GPIO10
+- BLK → GPIO14
+
+**旋钮 & 按钮**:
+- A → GPIO15
+- B → GPIO16
+- PUSH → GPIO17
+- K0 (返回) → GPIO18
+
+编辑 `src/main.cpp` 修改引脚。
+
+## 固件编译
+
+编译:
+```bash
+pio run --environment esp32s3
+```
+
+烧录:
+```bash
+pio run --environment esp32s3 --target upload
+```
+
+## 快速开始
+
+### 使用发行版本
+
+1. **安装依赖插件**
+   - 下载并安装 [BetterNCM Installer](https://github.com/std-microblock/BetterNCM-Installer/releases)
+   - 下载并安装 [Lyricify Lyrics Helper](https://github.com/WXRIW/Lyricify-Lyrics-Helper)
+
+2. **烧录固件**
+   - 运行 `SongLedFlasher.exe`
+   - 选择 COM 端口（通常为 COM3-COM6）
+   - 加载 `firmware.bin`（闪存地址: 0x20000）和 `bootloader.bin`（地址: 0x0）
+   - 点击烧录按钮并等待完成
+
+3. **运行 PC 应用**
+   - 双击 `SongLedPc.exe`
+   - 选择设备连接的 COM 端口
+   - 应用程序建立通信
+
+### 开发使用
+
+编译并烧录固件:
+```bash
+pio run --environment esp32s3 --target upload
+```
+
+从源代码运行 PC 应用:
+```bash
+dotnet run --project pc/SongLedPc -- --port COM6
+```
+
+## Windows 助手
+
+### C++ 版本
+
+编译:
+```bash
+cmake -S pc/SongLedPcCpp -B pc/SongLedPcCpp/build
+cmake --build pc/SongLedPcCpp/build --config Release
+```
+
+运行:
+```bash
+pc/SongLedPcCpp/build/Release/SongLedPcCpp.exe --port COM6
+```
+
+### C# 版本
+
+运行:
+```bash
+dotnet run --project pc/SongLedPc -- --port COM6
+```
+
+发布:
+```bash
+dotnet publish pc/SongLedPc -c Release -r win-x64 /p:PublishSingleFile=true
+```
+
+### Python 版本
+
+```bash
+pip install -r pc/requirements.txt
+python pc/win_audio_bridge.py --port COM6
+```
+
+## UI 操作
+
+旋转旋钮: 移动 / 改变音量  
+按下旋钮: 确认  
+K0 按钮: 返回
+
+## 串口协议
+
+ESP32 发送:
+```
+VOL GET
+VOL SET <0-100>
+MUTE
+SPK LIST
+SPK SET <index>
+HELLO
+```
+
+PC 发送:
+```
+VOL <0-100>
+MUTE <0/1>
+SPK BEGIN
+SPK ITEM <index> <name>
+SPK END
+SPK CUR <index>
+HELLO OK
+```
+
+## 项目结构
+
+- `src/` - 固件 (ESP-IDF)
+- `pc/` - Windows 伴侣应用 (C#/C++/Python)
+- `third_party/` - UI 框架 & 依赖
+- `docs/` - 文档
+
+## 第三方库
+
+| 库 | 许可证 | 用途 |
+|---|--------|------|
+| oled-ui-astra | GPLv3 | UI 框架 |
+| U8G2 | BSD 3-Clause | 图形库 |
+| ZPIX Font | OFL 1.1 | 中文字体 |
+
+详见 [THIRD_PARTY.md](THIRD_PARTY.md)。
+
+## 应用依赖库
+
+使用 PC 应用前需先安装两个网易云音乐插件:
+
+1. **BetterNCM 安装器** - 网易云音乐插件框架
+   - https://github.com/std-microblock/BetterNCM-Installer/releases
+
+2. **Lyricify 歌词助手** - 歌词同步和显示插件
+   - https://github.com/WXRIW/Lyricify-Lyrics-Helper
+
+请在使用 PC 应用前先安装这两个插件。
 
 ---
 
@@ -40,6 +203,37 @@ pio run --environment esp32s3
 Upload:
 ```bash
 pio run --environment esp32s3 --target upload
+```
+
+## Quick Start
+
+### For Pre-built Release
+
+1. **Install Dependencies**
+   - Download and install [BetterNCM Installer](https://github.com/std-microblock/BetterNCM-Installer/releases)
+   - Download and install [Lyricify Lyrics Helper](https://github.com/WXRIW/Lyricify-Lyrics-Helper)
+
+2. **Flash Firmware**
+   - Run `SongLedFlasher.exe`
+   - Select COM port (usually COM3-COM6)
+   - Load `firmware.bin` (flash address: 0x20000) and `bootloader.bin` (address: 0x0)
+   - Click Flash button and wait for completion
+
+3. **Run PC Application**
+   - Double-click `SongLedPc.exe`
+   - Select the COM port where your device is connected
+   - Application will establish communication
+
+### For Development
+
+Build and upload firmware:
+```bash
+pio run --environment esp32s3 --target upload
+```
+
+Run PC application from source:
+```bash
+dotnet run --project pc/SongLedPc -- --port COM6
 ```
 
 ## Windows Helper
@@ -174,6 +368,37 @@ pio run --environment esp32s3
 pio run --environment esp32s3 --target upload
 ```
 
+## クイックスタート
+
+### リリース版の使用
+
+1. **依存関係をインストール**
+   - [BetterNCM Installer](https://github.com/std-microblock/BetterNCM-Installer/releases) をダウンロードしてインストール
+   - [Lyricify Lyrics Helper](https://github.com/WXRIW/Lyricify-Lyrics-Helper) をダウンロードしてインストール
+
+2. **ファームウェアをフラッシュ**
+   - `SongLedFlasher.exe` を実行
+   - COMポート（通常COM3-COM6）を選択
+   - `firmware.bin`（フラッシュアドレス: 0x20000）と `bootloader.bin`（アドレス: 0x0）をロード
+   - Flashボタンをクリックして完了を待つ
+
+3. **PCアプリケーションを実行**
+   - `SongLedPc.exe` をダブルクリック
+   - デバイスが接続されているCOMポートを選択
+   - アプリケーションが通信を確立
+
+### 開発用
+
+ファームウェアをビルドしてアップロード:
+```bash
+pio run --environment esp32s3 --target upload
+```
+
+ソースからPCアプリケーションを実行:
+```bash
+dotnet run --project pc/SongLedPc -- --port COM6
+```
+
 ## Windows ヘルパー
 
 ### C++ バージョン
@@ -265,146 +490,6 @@ PC アプリケーションを使用する前に、2 つのネットイーズ �
    - https://github.com/WXRIW/Lyricify-Lyrics-Helper
 
 PC アプリケーションを使用する前にこれらのプラグインをインストールしてください。
-
----
-
-# 中文
-
-## 概览
-
-基于 ESP32-S3、ST7789 2.4" TFT、EC11 旋钮的音量控制设备。通过 USB 串口与 Windows 11 通信。
-
-功能: 音量控制、音频设备切换、歌词显示、专辑封面。
-
-## 硬件接线
-
-**TFT (ST7789)**:
-- SCL → GPIO12
-- SDA → GPIO11
-- RES → GPIO7
-- DC → GPIO9
-- CS → GPIO10
-- BLK → GPIO14
-
-**旋钮 & 按钮**:
-- A → GPIO15
-- B → GPIO16
-- PUSH → GPIO17
-- K0 (返回) → GPIO18
-
-编辑 `src/main.cpp` 修改引脚。
-
-## 固件编译
-
-编译:
-```bash
-pio run --environment esp32s3
-```
-
-烧录:
-```bash
-pio run --environment esp32s3 --target upload
-```
-
-## Windows 助手
-
-### C++ 版本
-
-编译:
-```bash
-cmake -S pc/SongLedPcCpp -B pc/SongLedPcCpp/build
-cmake --build pc/SongLedPcCpp/build --config Release
-```
-
-运行:
-```bash
-pc/SongLedPcCpp/build/Release/SongLedPcCpp.exe --port COM6
-```
-
-### C# 版本
-
-运行:
-```bash
-dotnet run --project pc/SongLedPc -- --port COM6
-```
-
-发布:
-```bash
-dotnet publish pc/SongLedPc -c Release -r win-x64 /p:PublishSingleFile=true
-```
-
-### Python 版本
-
-```bash
-pip install -r pc/requirements.txt
-python pc/win_audio_bridge.py --port COM6
-```
-
-## UI 操作
-
-旋转旋钮: 移动 / 改变音量  
-按下旋钮: 确认  
-K0 按钮: 返回
-
-## 串口协议
-
-ESP32 发送:
-```
-VOL GET
-VOL SET <0-100>
-MUTE
-SPK LIST
-SPK SET <index>
-HELLO
-```
-
-PC 发送:
-```
-VOL <0-100>
-MUTE <0/1>
-SPK BEGIN
-SPK ITEM <index> <name>
-SPK END
-SPK CUR <index>
-HELLO OK
-```
-
-## 项目结构
-
-- `src/` - 固件 (ESP-IDF)
-- `pc/` - Windows 伴侣应用 (C#/C++/Python)
-- `third_party/` - UI 框架 & 依赖
-- `docs/` - 文档
-
-## 第三方库
-
-| 库 | 许可证 | 用途 |
-|---|--------|------|
-| oled-ui-astra | GPLv3 | UI 框架 |
-| U8G2 | BSD 3-Clause | 图形库 |
-| ZPIX Font | OFL 1.1 | 中文字体 |
-
-详见 [THIRD_PARTY.md](THIRD_PARTY.md)。
-
-## 应用依赖库
-
-使用 PC 应用前需先安装两个网易云音乐插件:
-
-1. **BetterNCM 安装器** - 网易云音乐插件框架
-   - https://github.com/std-microblock/BetterNCM-Installer/releases
-
-2. **Lyricify 歌词助手** - 歌词同步和显示插件
-   - https://github.com/WXRIW/Lyricify-Lyrics-Helper
-
-请在使用 PC 应用前先安装这两个插件。
-
----
-
-## 开发规范
-
-修改固件前必读: [docs/ARC_ADJUST_UI_SPEC.md](docs/ARC_ADJUST_UI_SPEC.md)
-
-参数调节界面标准化实现：变量三件套、Slider显示实际单位值、圆弧中心数值与进度同步。
 
 ---
 
