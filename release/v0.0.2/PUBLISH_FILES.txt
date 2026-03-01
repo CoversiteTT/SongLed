@@ -1,0 +1,6 @@
+﻿songled_v0.0.2_merged.bin
+SongLed_v0.0.2_flasher.zip
+pc-lite/SongLedPcLite.exe
+pc-full/SongLedPc.exe
+CHANGELOG.md
+INSTALL.md
