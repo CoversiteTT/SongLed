@@ -11,17 +11,21 @@
 
 namespace astra {
 
+typedef void (*PopRenderHook)();
+
 class Launcher {
 private:
   Menu* currentMenu;
   Widget* currentWidget = nullptr;
   Selector* selector;
   Camera* camera;
+  PopRenderHook popRenderHook = nullptr;
 
   uint64_t time;
 
 public:
   void popInfo(std::string _info, uint16_t _time);
+  void setPopRenderHook(PopRenderHook hook) { popRenderHook = hook; }
 
   void init(Menu* _rootPage);
 

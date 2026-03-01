@@ -31,14 +31,16 @@ constexpr int UART_BAUD = 115200;
 constexpr const char *NVS_NAMESPACE = "songled";
 
 // Version Information
-constexpr const char *FIRMWARE_VERSION = "v0.0.2-beta";
+constexpr const char *FIRMWARE_VERSION = "v0.0.2";
 constexpr const char *BUILD_DATE = __DATE__;
 constexpr const char *BUILD_TIME = __TIME__;
 constexpr const char *CHANGELOG[] = {
-  "v0.0.2-beta:",
-  "  +BLE support",
-  "  +4bit test mode",
-  "  +About menu",
+  "v0.0.2:",
+  "  USB/BLE/Auto (USB first)",
+  "  Now Playing window",
+  "  Cover + lyric + progress",
+  "  Output + Mic menu",
+  "  Popup/UI fixes",
   "v0.0.1:",
   "  Initial release",
   nullptr
@@ -100,6 +102,7 @@ Launcher launcher;
 List *menuMain = nullptr;
 List *menuVolume = nullptr;
 List *menuOutput = nullptr;
+List *menuInput = nullptr;
 List *menuTest = nullptr;
 List *menuMute = nullptr;
 List *menuSettings = nullptr;
@@ -107,6 +110,7 @@ List *menuAbout = nullptr;
 List *menuBluetooth = nullptr;
 
 List *outputRefreshItem = nullptr;
+List *inputRefreshItem = nullptr;
 List *testIoItem = nullptr;
 List *testFpsItem = nullptr;
 List *testCpuItem = nullptr;
@@ -118,16 +122,20 @@ List *testDoubleBufferItem = nullptr;
 List *test4bitItem = nullptr;
 List *testUpItem = nullptr;
 List *testDownItem = nullptr;
+List *testLogItem = nullptr;
 List *uiSpeedItem = nullptr;
 List *selSpeedItem = nullptr;
 List *wrapPauseItem = nullptr;
 List *fontColorItem = nullptr;
 List *scrollTimeItem = nullptr;
 List *lyricScrollItem = nullptr;
+List *npAutoCloseItem = nullptr;
 List *cfgMsgAutoCloseItem = nullptr;
 List *bleEnableItem = nullptr;
 List *bleAdvItem = nullptr;
 List *bleDisconnectItem = nullptr;
+List *bleStatusItem = nullptr;
+List *bleRouteItem = nullptr;
 
 Slider *volumeSlider = nullptr;
 CheckBox *muteCheck = nullptr;
@@ -135,6 +143,7 @@ CheckBox *fpsCheck = nullptr;
 CheckBox *cpuCheck = nullptr;
 CheckBox *upCheck = nullptr;
 CheckBox *downCheck = nullptr;
+CheckBox *logCheck = nullptr;
 Slider *spiSlider = nullptr;
 CheckBox *dmaCheck = nullptr;
 CheckBox *fbCheck = nullptr;
@@ -147,6 +156,7 @@ Slider *wrapPauseSlider = nullptr;
 Slider *fontColorSlider = nullptr;
 Slider *scrollTimeSlider = nullptr;
 Slider *lyricScrollSlider = nullptr;
+Slider *npAutoCloseSlider = nullptr;
 Slider *cfgMsgAutoCloseSlider = nullptr;
 
 uint8_t volumeValue = 50;
@@ -155,6 +165,7 @@ bool showFps = false;
 bool showCpu = false;
 bool showUp = false;
 bool showDown = false;
+bool mcuLogEnabled = false;
 uint8_t uiSpeedValue = 13;
 uint8_t uiSpeedPending = 13;
 bool uiSpeedDirty = false;
@@ -173,13 +184,20 @@ bool scrollTimeDirty = false;
 uint8_t lyricScrollCpsValue = 8;
 uint8_t lyricScrollCpsPending = 8;
 bool lyricScrollCpsDirty = false;
+uint8_t npAutoCloseSecValue = 8;      // 0..60: 0=0ms, 60=NEVER, others=seconds
+uint8_t npAutoCloseSecPending = 8;
+bool npAutoCloseSecDirty = false;
 uint16_t cfgMsgAutoCloseMs = 5000;
-uint16_t cfgMsgAutoCloseMsPending = 5000;
-bool cfgMsgAutoCloseMsDirty = false;
+uint8_t cfgMsgAutoCloseValue = 26;
+uint8_t cfgMsgAutoClosePending = 26;
+bool cfgMsgAutoCloseDirty = false;
 
 bool speakersLoading = false;
 int speakerCurrentId = -1;
 bool speakersRequested = false;
+bool microphonesLoading = false;
+int microphoneCurrentId = -1;
+bool microphonesRequested = false;
 
 uint8_t spiMHz = 80;
 uint8_t spiPending = 80;
@@ -193,9 +211,10 @@ bool handshakeOk = false;
 bool syncedAfterHandshake = false;
 uint32_t lastHelloMs = 0;
 uint32_t lastRxMs = 0; // 最后一次收到消息的时间
+uint32_t lastUsbRxMs = 0;
 constexpr uint32_t HELLO_INTERVAL_MS = 3000;
 constexpr uint32_t HANDSHAKE_TIMEOUT_MS = 30000;
-constexpr uint32_t NOW_PLAYING_TIMEOUT_MS = 8000;
+constexpr uint32_t LINK_READY_STALE_MS = 3500;
 
 uint32_t txBytes = 0;
 uint32_t rxBytes = 0;
@@ -240,6 +259,8 @@ struct SpeakerEntry {
 
 std::vector<SpeakerEntry> speakers;
 std::vector<std::pair<Menu *, int>> speakerMenuMap;
+std::vector<SpeakerEntry> microphones;
+std::vector<std::pair<Menu *, int>> microphoneMenuMap;
 
 enum AppMode {
   MODE_NORMAL = 0,
@@ -251,6 +272,7 @@ enum AppMode {
   MODE_COLOR_ADJUST,
   MODE_SCROLL_ADJUST,
   MODE_LYRIC_SCROLL_ADJUST,
+  MODE_NP_CLOSE_ADJUST,
   MODE_CFG_CLOSE_ADJUST,
   MODE_TEST_PATTERN,
   MODE_ABOUT_INFO,
@@ -269,6 +291,7 @@ enum AdjustTarget {
   ADJ_FONT_COLOR,
   ADJ_SCROLL_TIME,
   ADJ_LYRIC_SCROLL_CPS,
+  ADJ_NP_CLOSE_SEC,
   ADJ_CFG_CLOSE,
 };
 
@@ -289,19 +312,35 @@ void applySelectorSpeed();
 void applyWrapPause();
 void applyScrollDuration();
 void applyLyricScrollSpeed();
+void applyNowPlayingAutoClose();
+uint8_t mapNpCloseFromMs(uint16_t ms);
+uint16_t mapNpCloseMs(uint8_t value);
 uint8_t mapCfgCloseFromMs(uint16_t ms);
 uint16_t mapCfgCloseMs(uint8_t value);
+uint16_t getPopupDurationMs(uint16_t fallbackMs);
+void popInfoGlobal(const std::string &text, uint16_t fallbackMs = 800);
 float mapHueDeg(uint8_t value);
 uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b);
 uint16_t hueToRgb565(uint8_t value);
 void applyFontColor();
 void renderTestPattern();
 void renderAboutInfo();
+void renderPopupBackground();
 void renderNowPlayingOverlay();
+void rebuildInputMenu();
+void clearNowPlayingState(bool clearLyrics);
 bool loadSettings();
 void saveSettings();
 void resetSettings();
 bool checkSafeReset();
+void bleDebugForward(const char *line);
+bool isUsbLinkReady();
+bool isBleBasicLinkReady();
+bool isBleClientLinkReady();
+bool canUseControlFeatures();
+const char *commModeLabel(CommMode mode);
+void updateControlMenuAvailability();
+void updateBluetoothMenuItems();
 
 void init_uart() {
   uart_config_t uart_config = {};
@@ -317,24 +356,102 @@ void init_uart() {
   uart_set_pin(UART_NUM_0, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 }
 
+bool isUsbLinkReady() {
+  if (!handshakeOk) return false;
+  if (lastUsbRxMs == 0) return false;
+  uint32_t nowMs = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
+  return (nowMs - lastUsbRxMs) <= LINK_READY_STALE_MS;
+}
+
+bool isBleBasicLinkReady() { return bleEnabled && ble_is_connected(); }
+
+bool isBleClientLinkReady() { return bleEnabled && ble_is_notify_ready(); }
+
+const char *commModeLabel(CommMode mode) {
+  switch (mode) {
+    case COMM_USB: return "Wired";
+    case COMM_BLE: return "BLE Client";
+    case COMM_AUTO:
+    default: return "Auto";
+  }
+}
+
+static CommMode pickCommandMode() {
+  bool usbReady = isUsbLinkReady();
+  bool bleClientReady = isBleClientLinkReady();
+  if (commMode == COMM_USB) {
+    if (usbReady) return COMM_USB;
+    if (bleClientReady) return COMM_BLE;  // fallback
+    return COMM_AUTO;
+  }
+  if (commMode == COMM_BLE) {
+    if (bleClientReady) return COMM_BLE;
+    if (usbReady) return COMM_USB;  // fallback
+    return COMM_AUTO;
+  }
+  // AUTO mode: always prefer wired link when both are ready.
+  if (usbReady && bleClientReady) return COMM_USB;
+  if (usbReady) return COMM_USB;
+  if (bleClientReady) return COMM_BLE;
+  return COMM_AUTO;
+}
+
+bool canUseControlFeatures() {
+  return pickCommandMode() != COMM_AUTO;
+}
+
+void updateBluetoothMenuItems() {
+  if (!bleStatusItem || !bleRouteItem) return;
+  bool usbReady = isUsbLinkReady();
+  bool bleBasicReady = isBleBasicLinkReady();
+  bool bleClientReady = isBleClientLinkReady();
+
+  std::string status;
+  if (usbReady && bleClientReady) {
+    status = "Status: Wired + BLE Client";
+  } else if (usbReady && bleBasicReady) {
+    status = "Status: Wired + BLE Basic";
+  } else if (usbReady) {
+    status = "Status: Wired";
+  } else if (bleClientReady) {
+    status = "Status: BLE Client";
+  } else if (bleBasicReady) {
+    status = "Status: BLE Basic";
+  } else {
+    status = "Status: Offline";
+  }
+  CommMode activeMode = pickCommandMode();
+  if (activeMode == COMM_AUTO) {
+    status += " -> N/A";
+  } else {
+    status += std::string(" -> ") + commModeLabel(activeMode);
+  }
+  bleStatusItem->title = status;
+  bleRouteItem->title = std::string("Prefer: ") + commModeLabel(commMode);
+  updateControlMenuAvailability();
+}
+
+void updateControlMenuAvailability() {
+  if (!menuVolume || !menuOutput || !menuInput || !menuMute) return;
+  bool enabled = canUseControlFeatures();
+  const char *suffix = enabled ? "" : " [LOCK]";
+  menuVolume->title = std::string("Volume") + suffix;
+  menuOutput->title = std::string("Output Device") + suffix;
+  menuInput->title = std::string("Microphone") + suffix;
+  menuMute->title = std::string("Mute") + suffix;
+}
+
 void sendLine(const char *line) {
   size_t len = strlen(line);
-  bool sent = false;
-  
-  // Try BLE first if enabled and connected
-  if (bleEnabled && ble_is_connected()) {
-    if (ble_send_line(line)) {
-      txBytes += static_cast<uint32_t>(len + 1);
-      sent = true;
-    }
-  }
-  
-  // Fallback to USB or use USB if not sent via BLE
-  if (!sent && commMode != COMM_BLE) {
-    uart_write_bytes(UART_NUM_0, line, static_cast<int>(len));
-    uart_write_bytes(UART_NUM_0, "\n", 1);
+  CommMode route = pickCommandMode();
+  if (route == COMM_BLE && ble_send_line(line)) {
     txBytes += static_cast<uint32_t>(len + 1);
+    return;
   }
+  // AUTO mode fallback: keep sending HELLO/commands over UART for discovery.
+  uart_write_bytes(UART_NUM_0, line, static_cast<int>(len));
+  uart_write_bytes(UART_NUM_0, "\n", 1);
+  txBytes += static_cast<uint32_t>(len + 1);
 }
 
 void sendVolumeGet() { sendLine("VOL GET"); }
@@ -352,6 +469,14 @@ void sendSpeakerListRequest() { sendLine("SPK LIST"); }
 void sendSpeakerSet(int id) {
   char line[24];
   snprintf(line, sizeof(line), "SPK SET %d", id);
+  sendLine(line);
+}
+
+void sendMicListRequest() { sendLine("MIC LIST"); }
+
+void sendMicSet(int id) {
+  char line[24];
+  snprintf(line, sizeof(line), "MIC SET %d", id);
   sendLine(line);
 }
 
@@ -433,6 +558,17 @@ void updatePerfWidgets() {
     downCheck->value = showDown;
     downCheck->init();
   }
+  if (logCheck) {
+    logCheck->value = mcuLogEnabled;
+    logCheck->init();
+  }
+}
+
+void bleDebugForward(const char *line) {
+  if (!mcuLogEnabled || !line || line[0] == '\0') return;
+  char msg[220];
+  snprintf(msg, sizeof(msg), "DEBUG: %s", line);
+  sendLine(msg);
 }
 
 void updateDisplayWidgets() {
@@ -475,14 +611,19 @@ void updateSettingsWidgets() {
     lyricScrollSlider->value = lyricScrollCpsPending;
     lyricScrollSlider->init();
   }
+  if (npAutoCloseSlider) {
+    npAutoCloseSlider->value = npAutoCloseSecPending;
+    npAutoCloseSlider->init();
+  }
   if (cfgMsgAutoCloseSlider) {
-    cfgMsgAutoCloseSlider->value = mapCfgCloseFromMs(cfgMsgAutoCloseMsPending);
+    cfgMsgAutoCloseSlider->value = cfgMsgAutoClosePending;
     cfgMsgAutoCloseSlider->init();
   }
   if (bleEnableCheck) {
     bleEnableCheck->value = bleEnabled;
     bleEnableCheck->init();
   }
+  updateBluetoothMenuItems();
 }
 
 void applyDisplayConfig() {
@@ -557,6 +698,26 @@ extern "C" void handleLine(char *line) {
   } else if (strncmp(line, "SPK CUR ", 8) == 0) {
     speakerCurrentId = atoi(line + 8);
     rebuildOutputMenu();
+  } else if (strcmp(line, "MIC BEGIN") == 0) {
+    microphonesLoading = true;
+    microphones.clear();
+    rebuildInputMenu();
+  } else if (strncmp(line, "MIC ITEM ", 9) == 0) {
+    const char *p = line + 9;
+    int id = atoi(p);
+    const char *name = strchr(p, ' ');
+    if (name) {
+      name++;
+    } else {
+      name = "";
+    }
+    microphones.push_back({id, name});
+  } else if (strcmp(line, "MIC END") == 0) {
+    microphonesLoading = false;
+    rebuildInputMenu();
+  } else if (strncmp(line, "MIC CUR ", 8) == 0) {
+    microphoneCurrentId = atoi(line + 8);
+    rebuildInputMenu();
   } else if (strncmp(line, "LRC CUR ", 8) == 0) {
     // Current lyric line
     const char *text = line + 8;
@@ -583,6 +744,7 @@ extern "C" void handleLine(char *line) {
     currentLyric.active = false;
     nextLyric.active = false;
     lyricScrollOffset = 0;
+    lyricLastUpdateMs = 0;
   } else if (strncmp(line, "NP META ", 8) == 0) {
     // Treat any NP message as a valid handshake to stop HELLO spam.
     handshakeOk = true;
@@ -639,14 +801,7 @@ extern "C" void handleLine(char *line) {
     }
   } else if (strncmp(line, "NP CLR", 6) == 0) {
     handshakeOk = true;
-    nowPlaying.active = false;
-    nowPlaying.coverValid = false;
-    nowPlaying.coverReceiving = false;
-    nowPlaying.coverIndex = 0;
-    nowPlaying.coverTotal = NP_COVER_PIXELS;
-    nowPlaying.lastUpdateMs = 0;
-    memset(nowPlaying.coverFront, 0, sizeof(nowPlaying.coverFront));
-    memset(nowPlaying.coverBack, 0, sizeof(nowPlaying.coverBack));
+    clearNowPlayingState(true);
   } else if (strncmp(line, "NP COV BEGIN", 12) == 0) {
     handshakeOk = true;
     nowPlaying.coverReceiving = true;
@@ -714,6 +869,7 @@ void readSerial() {
   int len = uart_read_bytes(UART_NUM_0, data, sizeof(data), 0);
   if (len > 0) {
     rxBytes += static_cast<uint32_t>(len);
+    lastUsbRxMs = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
   }
   for (int i = 0; i < len; ++i) {
     char c = static_cast<char>(data[i]);
@@ -736,24 +892,43 @@ int speakerIdForMenu(Menu *item) {
   return -1;
 }
 
+int micIdForMenu(Menu *item) {
+  for (const auto &pair : microphoneMenuMap) {
+    if (pair.first == item) return pair.second;
+  }
+  return -1;
+}
+
 void handleConfirm(Menu *current) {
   if (!current) return;
   Menu *selected = current->childMenu.empty() ? nullptr : current->childMenu[current->selectIndex];
 
   if (current == menuMain) {
     if (selected == menuVolume) {
+      if (!canUseControlFeatures()) {
+        popInfoGlobal("Link Unavailable", 700);
+        return;
+      }
       appMode = MODE_VOLUME_ADJUST;
       adjustActive = true;
       adjustTarget = ADJ_VOLUME;
       return;
     }
     if (selected == menuMute) {
+      if (!canUseControlFeatures()) {
+        popInfoGlobal("Link Unavailable", 700);
+        return;
+      }
       muteState = muteCheck->toggle();
       updateMuteWidgets();
       sendMuteToggle();
       return;
     }
     if (selected == menuOutput) {
+      if (!canUseControlFeatures()) {
+        popInfoGlobal("Need Wired/BLE Client", 800);
+        return;
+      }
       launcher.open();
       // 首次进入时自动刷新设备列表
       if (!speakersRequested && !speakersLoading) {
@@ -761,6 +936,20 @@ void handleConfirm(Menu *current) {
         speakersLoading = true;
         sendSpeakerListRequest();
         rebuildOutputMenu();
+      }
+      return;
+    }
+    if (selected == menuInput) {
+      if (!canUseControlFeatures()) {
+        popInfoGlobal("Need Wired/BLE Client", 800);
+        return;
+      }
+      launcher.open();
+      if (!microphonesRequested && !microphonesLoading) {
+        microphonesRequested = true;
+        microphonesLoading = true;
+        sendMicListRequest();
+        rebuildInputMenu();
       }
       return;
     }
@@ -776,6 +965,10 @@ void handleConfirm(Menu *current) {
   }
 
   if (current == menuOutput) {
+    if (!canUseControlFeatures()) {
+      popInfoGlobal("Need Wired/BLE Client", 800);
+      return;
+    }
     if (selected == outputRefreshItem) {
       speakersLoading = true;
       sendSpeakerListRequest();
@@ -791,9 +984,29 @@ void handleConfirm(Menu *current) {
     return;
   }
 
+  if (current == menuInput) {
+    if (!canUseControlFeatures()) {
+      popInfoGlobal("Need Wired/BLE Client", 800);
+      return;
+    }
+    if (selected == inputRefreshItem) {
+      microphonesLoading = true;
+      sendMicListRequest();
+      rebuildInputMenu();
+      return;
+    }
+    int id = micIdForMenu(selected);
+    if (id >= 0) {
+      microphoneCurrentId = id;
+      sendMicSet(id);
+      rebuildInputMenu();
+    }
+    return;
+  }
+
   if (current == menuTest) {
     if (selected == testIoItem) {
-      launcher.popInfo("IO Test", 600);
+      popInfoGlobal("IO Test", 600);
       return;
     }
     if (selected == test4bitItem) {
@@ -849,6 +1062,12 @@ void handleConfirm(Menu *current) {
     if (selected == testDownItem) {
       showDown = downCheck->toggle();
       updatePerfWidgets();
+      return;
+    }
+    if (selected == testLogItem) {
+      mcuLogEnabled = logCheck->toggle();
+      updatePerfWidgets();
+      popInfoGlobal(mcuLogEnabled ? "Log On" : "Log Off", 500);
       return;
     }
   }
@@ -908,10 +1127,19 @@ void handleConfirm(Menu *current) {
       adjustTarget = ADJ_LYRIC_SCROLL_CPS;
       return;
     }
+    if (selected == npAutoCloseItem) {
+      appMode = MODE_NP_CLOSE_ADJUST;
+      npAutoCloseSecPending = npAutoCloseSecValue;
+      npAutoCloseSecDirty = false;
+      updateSettingsWidgets();
+      adjustActive = true;
+      adjustTarget = ADJ_NP_CLOSE_SEC;
+      return;
+    }
     if (selected == cfgMsgAutoCloseItem) {
       appMode = MODE_CFG_CLOSE_ADJUST;
-      cfgMsgAutoCloseMsPending = cfgMsgAutoCloseMs;
-      cfgMsgAutoCloseMsDirty = false;
+      cfgMsgAutoClosePending = cfgMsgAutoCloseValue;
+      cfgMsgAutoCloseDirty = false;
       updateSettingsWidgets();
       adjustActive = true;
       adjustTarget = ADJ_CFG_CLOSE;
@@ -933,21 +1161,36 @@ void handleConfirm(Menu *current) {
   }
 
   if (current == menuBluetooth) {
+    if (selected == bleStatusItem) {
+      updateBluetoothMenuItems();
+      popInfoGlobal(bleStatusItem->title, 800);
+      return;
+    }
+    if (selected == bleRouteItem) {
+      if (commMode == COMM_AUTO) commMode = COMM_USB;
+      else if (commMode == COMM_USB) commMode = COMM_BLE;
+      else commMode = COMM_AUTO;
+      updateBluetoothMenuItems();
+      popInfoGlobal(bleRouteItem->title, 700);
+      saveSettings();
+      return;
+    }
     if (selected == bleEnableItem) {
       bool next = bleEnableCheck->toggle();
       if (next && !bleEnabled) {
+        ble_set_debug_callback(bleDebugForward);
         if (ble_service_init("SongLed")) {
           bleEnabled = true;
-          launcher.popInfo("BLE", 600);
+          popInfoGlobal("BLE", 600);
         } else {
           bleEnabled = false;
           bleEnableCheck->value = false;
-          launcher.popInfo("BLE Init Fail", 800);
+          popInfoGlobal("BLE Init Fail", 800);
         }
       } else if (!next && bleEnabled) {
         ble_service_deinit();
         bleEnabled = false;
-        launcher.popInfo("BLE Off", 600);
+        popInfoGlobal("BLE Off", 600);
       }
       updateSettingsWidgets();
       return;
@@ -955,18 +1198,18 @@ void handleConfirm(Menu *current) {
     if (selected == bleAdvItem) {
       if (bleEnabled) {
         ble_restart_advertising();
-        launcher.popInfo("Adv Restart", 600);
+        popInfoGlobal("Adv Restart", 600);
       } else {
-        launcher.popInfo("BLE Off", 600);
+        popInfoGlobal("BLE Off", 600);
       }
       return;
     }
     if (selected == bleDisconnectItem) {
       if (bleEnabled) {
         ble_disconnect();
-        launcher.popInfo("BLE Disc", 600);
+        popInfoGlobal("BLE Disc", 600);
       } else {
-        launcher.popInfo("BLE Off", 600);
+        popInfoGlobal("BLE Off", 600);
       }
       return;
     }
@@ -986,10 +1229,23 @@ void handleKeyEvents() {
   bool adjustColor = (appMode == MODE_COLOR_ADJUST);
   bool adjustScroll = (appMode == MODE_SCROLL_ADJUST);
   bool adjustLyricScroll = (appMode == MODE_LYRIC_SCROLL_ADJUST);
+  bool adjustNpClose = (appMode == MODE_NP_CLOSE_ADJUST);
   bool adjustCfgClose = (appMode == MODE_CFG_CLOSE_ADJUST);
   bool adjustTest = (appMode == MODE_TEST_PATTERN);
   bool adjustAbout = (appMode == MODE_ABOUT_INFO);
-  bool adjustMode = adjustActive && (adjustVolume || adjustSpi || adjustUi || adjustSel || adjustWrap || adjustColor || adjustScroll || adjustLyricScroll || adjustCfgClose || adjustTest || adjustAbout);
+  bool adjustMode = adjustActive && (adjustVolume || adjustSpi || adjustUi || adjustSel || adjustWrap || adjustColor || adjustScroll || adjustLyricScroll || adjustNpClose || adjustCfgClose || adjustTest || adjustAbout);
+  auto consumeQueuedMenuSteps = [&]() {
+    if (adjustMode || !launcher.getSelector()) return;
+    int queued = hal.consumeQueuedEncoderSteps();
+    if (queued == 0) return;
+    int steps = (queued > 0) ? queued : -queued;
+    if (steps > 18) steps = 18;  // avoid accidental long jump from noisy burst
+    if (queued > 0) {
+      while (steps-- > 0) launcher.getSelector()->goNext();
+    } else {
+      while (steps-- > 0) launcher.getSelector()->goPreview();
+    }
+  };
 
   if (keys[key::KEY_0] == key::CLICK) {
     if (adjustMode) {
@@ -1013,6 +1269,7 @@ void handleKeyEvents() {
         if (selSpeedPending > 1 + step) selSpeedPending = static_cast<uint8_t>(selSpeedPending - step);
         else selSpeedPending = 1;
         selSpeedDirty = true;
+        astra::getUIConfig().selectorListDurationMs = mapSelSpeedMs(selSpeedPending);
         updateSettingsWidgets();
       } else if (adjustWrap) {
         if (wrapPausePending > step) wrapPausePending = static_cast<uint8_t>(wrapPausePending - step);
@@ -1034,14 +1291,15 @@ void handleKeyEvents() {
         else lyricScrollCpsPending = 1;
         lyricScrollCpsDirty = true;
         updateSettingsWidgets();
+      } else if (adjustNpClose) {
+        if (npAutoCloseSecPending > step) npAutoCloseSecPending = static_cast<uint8_t>(npAutoCloseSecPending - step);
+        else npAutoCloseSecPending = 0;
+        npAutoCloseSecDirty = true;
+        updateSettingsWidgets();
       } else if (adjustCfgClose) {
-        uint16_t decrement = static_cast<uint16_t>(200 * step);
-        if (cfgMsgAutoCloseMsPending >= decrement) {
-          cfgMsgAutoCloseMsPending = static_cast<uint16_t>(cfgMsgAutoCloseMsPending - decrement);
-        } else {
-          cfgMsgAutoCloseMsPending = 0;
-        }
-        cfgMsgAutoCloseMsDirty = true;
+        if (cfgMsgAutoClosePending > step) cfgMsgAutoClosePending = static_cast<uint8_t>(cfgMsgAutoClosePending - step);
+        else cfgMsgAutoClosePending = 0;
+        cfgMsgAutoCloseDirty = true;
         updateSettingsWidgets();
       } else if (adjustAbout) {
         // Scroll up
@@ -1054,6 +1312,7 @@ void handleKeyEvents() {
       }
     } else if (launcher.getSelector()) {
       launcher.getSelector()->goPreview();
+      consumeQueuedMenuSteps();
     }
   }
   if (keys[key::KEY_1] == key::CLICK) {
@@ -1079,6 +1338,7 @@ void handleKeyEvents() {
         if (selSpeedPending + step <= 50) selSpeedPending = static_cast<uint8_t>(selSpeedPending + step);
         else selSpeedPending = 50;
         selSpeedDirty = true;
+        astra::getUIConfig().selectorListDurationMs = mapSelSpeedMs(selSpeedPending);
         updateSettingsWidgets();
       } else if (adjustWrap) {
         if (wrapPausePending + step <= 50) wrapPausePending = static_cast<uint8_t>(wrapPausePending + step);
@@ -1100,17 +1360,15 @@ void handleKeyEvents() {
         else lyricScrollCpsPending = 30;
         lyricScrollCpsDirty = true;
         updateSettingsWidgets();
+      } else if (adjustNpClose) {
+        if (npAutoCloseSecPending + step <= 60) npAutoCloseSecPending = static_cast<uint8_t>(npAutoCloseSecPending + step);
+        else npAutoCloseSecPending = 60;
+        npAutoCloseSecDirty = true;
+        updateSettingsWidgets();
       } else if (adjustCfgClose) {
-        uint16_t increment = static_cast<uint16_t>(200 * step);
-        if (cfgMsgAutoCloseMsPending == 0) {
-          cfgMsgAutoCloseMsPending = increment;
-        } else if (cfgMsgAutoCloseMsPending < 11800) {
-          cfgMsgAutoCloseMsPending = static_cast<uint16_t>(cfgMsgAutoCloseMsPending + increment);
-          if (cfgMsgAutoCloseMsPending > 11800) cfgMsgAutoCloseMsPending = 11800;
-        } else {
-          cfgMsgAutoCloseMsPending = 65535;
-        }
-        cfgMsgAutoCloseMsDirty = true;
+        if (cfgMsgAutoClosePending + step <= 60) cfgMsgAutoClosePending = static_cast<uint8_t>(cfgMsgAutoClosePending + step);
+        else cfgMsgAutoClosePending = 60;
+        cfgMsgAutoCloseDirty = true;
         updateSettingsWidgets();
       } else if (adjustAbout) {
         // Scroll down
@@ -1124,6 +1382,7 @@ void handleKeyEvents() {
       }
     } else if (launcher.getSelector()) {
       launcher.getSelector()->goNext();
+      consumeQueuedMenuSteps();
     }
   }
 
@@ -1163,8 +1422,14 @@ void handleKeyEvents() {
         applyLyricScrollSpeed();
         saveSettings();
       }
-      if (adjustCfgClose && cfgMsgAutoCloseMsDirty) {
-        cfgMsgAutoCloseMs = cfgMsgAutoCloseMsPending;
+      if (adjustNpClose && npAutoCloseSecDirty) {
+        npAutoCloseSecValue = npAutoCloseSecPending;
+        applyNowPlayingAutoClose();
+        saveSettings();
+      }
+      if (adjustCfgClose && cfgMsgAutoCloseDirty) {
+        cfgMsgAutoCloseValue = cfgMsgAutoClosePending;
+        cfgMsgAutoCloseMs = mapCfgCloseMs(cfgMsgAutoCloseValue);
         saveSettings();
       }
       if (adjustAbout) {
@@ -1226,8 +1491,14 @@ void handleKeyEvents() {
         applyLyricScrollSpeed();
         saveSettings();
       }
-      if (adjustCfgClose && cfgMsgAutoCloseMsDirty) {
-        cfgMsgAutoCloseMs = cfgMsgAutoCloseMsPending;
+      if (adjustNpClose && npAutoCloseSecDirty) {
+        npAutoCloseSecValue = npAutoCloseSecPending;
+        applyNowPlayingAutoClose();
+        saveSettings();
+      }
+      if (adjustCfgClose && cfgMsgAutoCloseDirty) {
+        cfgMsgAutoCloseValue = cfgMsgAutoClosePending;
+        cfgMsgAutoCloseMs = mapCfgCloseMs(cfgMsgAutoCloseValue);
         saveSettings();
       }
       if (adjustTest) {
@@ -1273,10 +1544,12 @@ void buildMenus() {
   fontColorPending = fontColorValue;
   scrollTimePending = scrollTimeValue;
   lyricScrollCpsPending = lyricScrollCpsValue;
+  npAutoCloseSecPending = npAutoCloseSecValue;
 
   menuMain = new List("Main");
   menuVolume = new List("Volume");
   menuOutput = new List("Output Device");
+  menuInput = new List("Microphone");
   menuTest = new List("Test Tools");
   menuMute = new List("Mute");
   menuSettings = new List("Settings");
@@ -1286,12 +1559,15 @@ void buildMenus() {
 
   menuMain->addItem(menuVolume, volumeSlider);
   menuMain->addItem(menuOutput);
+  menuMain->addItem(menuInput);
   menuMain->addItem(menuTest);
   menuMain->addItem(menuSettings);
   menuMain->addItem(menuMute, muteCheck);
 
   outputRefreshItem = new List("Refresh List");
   menuOutput->addItem(outputRefreshItem);
+  inputRefreshItem = new List("Refresh List");
+  menuInput->addItem(inputRefreshItem);
 
   testIoItem = new List("IO Test");
   test4bitItem = new List("4bit Test");
@@ -1304,10 +1580,12 @@ void buildMenus() {
   testCpuItem = new List("CPU");
   testUpItem = new List("UP");
   testDownItem = new List("DOWN");
+  testLogItem = new List("MCU Log");
   fpsCheck = new CheckBox(showFps);
   cpuCheck = new CheckBox(showCpu);
   upCheck = new CheckBox(showUp);
   downCheck = new CheckBox(showDown);
+  logCheck = new CheckBox(mcuLogEnabled);
   spiSlider = new Slider("SPI", 1, 80, 1, spiMHz);
   dmaCheck = new CheckBox(dmaEnabled);
   fbCheck = new CheckBox(fbEnabled);
@@ -1324,6 +1602,7 @@ void buildMenus() {
   menuTest->addItem(testCpuItem, cpuCheck);
   menuTest->addItem(testUpItem, upCheck);
   menuTest->addItem(testDownItem, downCheck);
+  menuTest->addItem(testLogItem, logCheck);
 
   uiSpeedItem = new List("UI Speed");
   uiSpeedSlider = new Slider("Speed", 1, 50, 1, uiSpeedValue);
@@ -1343,18 +1622,24 @@ void buildMenus() {
   lyricScrollItem = new List("Lyric Speed");
   lyricScrollSlider = new Slider("CPS", 1, 30, 1, lyricScrollCpsValue);
   menuSettings->addItem(lyricScrollItem, lyricScrollSlider);
+  npAutoCloseItem = new List("Music Close");
+  npAutoCloseSlider = new Slider("Close", 0, 60, 1, npAutoCloseSecValue);
+  menuSettings->addItem(npAutoCloseItem, npAutoCloseSlider);
   
   cfgMsgAutoCloseItem = new List("Auto Close Msg");
-  uint8_t cfgCloseInitVal = mapCfgCloseFromMs(cfgMsgAutoCloseMs);
-  cfgMsgAutoCloseSlider = new Slider("Close", 0, 60, 1, cfgCloseInitVal);
+  cfgMsgAutoCloseSlider = new Slider("Close", 0, 60, 1, cfgMsgAutoCloseValue);
   menuSettings->addItem(cfgMsgAutoCloseItem, cfgMsgAutoCloseSlider);
 
   // Bluetooth menu
   menuBluetooth = new List("Bluetooth");
+  bleStatusItem = new List("Status: Offline");
+  bleRouteItem = new List("Prefer: Auto");
   bleEnableItem = new List("Enable BLE");
   bleAdvItem = new List("Restart Adv");
   bleDisconnectItem = new List("Disconnect");
   bleEnableCheck = new CheckBox(bleEnabled);
+  menuBluetooth->addItem(bleStatusItem);
+  menuBluetooth->addItem(bleRouteItem);
   menuBluetooth->addItem(bleEnableItem, bleEnableCheck);
   menuBluetooth->addItem(bleAdvItem);
   menuBluetooth->addItem(bleDisconnectItem);
@@ -1370,6 +1655,7 @@ void buildMenus() {
   updateDisplayWidgets();
   updateSettingsWidgets();
   rebuildOutputMenu();
+  rebuildInputMenu();
 }
 
 float mapUiSpeedScale(uint8_t value) {
@@ -1480,10 +1766,70 @@ uint8_t mapCfgCloseFromMs(uint16_t ms) {
   return static_cast<uint8_t>(1 + ms / 200);
 }
 
+void rebuildInputMenu() {
+  for (auto *item : menuInput->childMenu) {
+    if (item == inputRefreshItem) continue;
+    delete item;
+  }
+  menuInput->childMenu.clear();
+  menuInput->childWidget.clear();
+  microphoneMenuMap.clear();
+
+  menuInput->addItem(inputRefreshItem);
+
+  if (microphonesLoading) {
+    auto *loading = new List("Loading...");
+    menuInput->addItem(loading);
+  } else if (microphones.empty()) {
+    auto *none = new List("No devices");
+    menuInput->addItem(none);
+  } else {
+    for (const auto &mic : microphones) {
+      std::string title = mic.name;
+      if (mic.id == microphoneCurrentId) title = "* " + title;
+      auto *item = new List(title);
+      menuInput->addItem(item);
+      microphoneMenuMap.push_back({item, mic.id});
+    }
+  }
+
+  menuInput->forePosInit();
+  if (launcher.getCamera()) {
+    menuInput->childPosInit(launcher.getCamera()->getPosition());
+  }
+  if (launcher.getCurrentMenu() == menuInput && launcher.getSelector()) {
+    launcher.getSelector()->inject(menuInput);
+  }
+}
+
 uint16_t mapCfgCloseMs(uint8_t value) {
   if (value == 0) return 0;
   if (value >= 60) return 65535;
   return static_cast<uint16_t>((value - 1) * 200 + 200);
+}
+
+uint8_t mapNpCloseFromMs(uint16_t ms) {
+  if (ms >= 65535) return 60;
+  if (ms == 0) return 0;
+  if (ms < 1000) return 1;
+  if (ms > 59000) return 59;
+  return static_cast<uint8_t>(ms / 1000);
+}
+
+uint16_t mapNpCloseMs(uint8_t value) {
+  if (value == 0) return 0;
+  if (value >= 60) return 65535;
+  return static_cast<uint16_t>(value * 1000);
+}
+
+uint16_t getPopupDurationMs(uint16_t fallbackMs) {
+  if (cfgMsgAutoCloseMs == 0) return 1;
+  if (cfgMsgAutoCloseMs >= 65535) return 65535;
+  return cfgMsgAutoCloseMs;
+}
+
+void popInfoGlobal(const std::string &text, uint16_t fallbackMs) {
+  launcher.popInfo(text, getPopupDurationMs(fallbackMs));
 }
 
 int countUtf8Glyphs(const std::string &text) {
@@ -1519,8 +1865,31 @@ void applyLyricScrollSpeed() {
   if (lyricScrollCpsValue > 30) lyricScrollCpsValue = 30;
 }
 
+void applyNowPlayingAutoClose() {
+  if (npAutoCloseSecValue > 60) npAutoCloseSecValue = 60;
+}
+
 void applyFontColor() {
   hal.setForegroundColor(hueToRgb565(fontColorValue));
+}
+
+void clearNowPlayingState(bool clearLyrics) {
+  nowPlaying.active = false;
+  nowPlaying.coverValid = false;
+  nowPlaying.coverReceiving = false;
+  nowPlaying.coverIndex = 0;
+  nowPlaying.coverTotal = NP_COVER_PIXELS;
+  nowPlaying.lastUpdateMs = 0;
+  memset(nowPlaying.coverFront, 0, sizeof(nowPlaying.coverFront));
+  memset(nowPlaying.coverBack, 0, sizeof(nowPlaying.coverBack));
+  hal.clearImageOverlay();
+  hal.clearBarOverlay();
+  if (clearLyrics) {
+    currentLyric.active = false;
+    nextLyric.active = false;
+    lyricScrollOffset = 0;
+    lyricLastUpdateMs = 0;
+  }
 }
 
 bool loadSettings() {
@@ -1559,6 +1928,29 @@ bool loadSettings() {
   if (nvs_get_u8(handle, "lyric_cps", &val) == ESP_OK) {
     if (val >= 1 && val <= 30) {
       lyricScrollCpsValue = val;
+    }
+  }
+  uint16_t npCloseVal = 0;
+  if (nvs_get_u16(handle, "np_close_ms", &npCloseVal) == ESP_OK) {
+    npAutoCloseSecValue = mapNpCloseFromMs(npCloseVal);
+  } else if (nvs_get_u8(handle, "np_close_s", &val) == ESP_OK) {
+    // Backward compatibility with old seconds-based setting.
+    if (val <= 120) {
+      uint16_t ms = (val == 0) ? 0 : static_cast<uint16_t>(std::min<int>(val * 1000, 59000));
+      npAutoCloseSecValue = mapNpCloseFromMs(ms);
+    }
+  }
+  uint16_t closeVal = 0;
+  if (nvs_get_u16(handle, "cfg_close", &closeVal) == ESP_OK) {
+    if (closeVal == 0 || closeVal >= 65535 || closeVal <= 11800) {
+      cfgMsgAutoCloseMs = closeVal;
+      cfgMsgAutoCloseValue = mapCfgCloseFromMs(cfgMsgAutoCloseMs);
+      cfgMsgAutoClosePending = cfgMsgAutoCloseValue;
+    }
+  }
+  if (nvs_get_u8(handle, "comm_mode", &val) == ESP_OK) {
+    if (val <= static_cast<uint8_t>(COMM_AUTO)) {
+      commMode = static_cast<CommMode>(val);
     }
   }
   nvs_close(handle);
@@ -1785,6 +2177,9 @@ void saveSettings() {
   nvs_set_u8(handle, "font_hue", fontColorValue);
   nvs_set_u8(handle, "scroll_ms", scrollTimeValue);
   nvs_set_u8(handle, "lyric_cps", lyricScrollCpsValue);
+  nvs_set_u16(handle, "np_close_ms", mapNpCloseMs(npAutoCloseSecValue));
+  nvs_set_u16(handle, "cfg_close", cfgMsgAutoCloseMs);
+  nvs_set_u8(handle, "comm_mode", static_cast<uint8_t>(commMode));
   nvs_commit(handle);
   nvs_close(handle);
 }
@@ -1960,24 +2355,34 @@ void renderAdjustScreen() {
     valueText = std::to_string(static_cast<int>(std::round(targetValue))) + " cps";
     minText = "1 cps";
     maxText = "30 cps";
-  } else if (adjustTarget == ADJ_CFG_CLOSE) {
-    targetValue = static_cast<float>(cfgMsgAutoCloseMsPending);
-    // 对于禁用值(65535)，限制targetValue为maxValue以保证progress ≤ 1.0
-    if (cfgMsgAutoCloseMsPending >= 65535) {
-      targetValue = 11800.0f;
-    }
+  } else if (adjustTarget == ADJ_NP_CLOSE_SEC) {
+    targetValue = static_cast<float>(npAutoCloseSecPending);
     minValue = 0.0f;
-    maxValue = 11800.0f;
-    label = "AUTO CLOSE MSG";
-    if (cfgMsgAutoCloseMsPending == 0) {
-      valueText = "INSTANT";
-    } else if (cfgMsgAutoCloseMsPending >= 65535) {
-      valueText = "DISABLED";
+    maxValue = 60.0f;
+    label = "MUSIC CLOSE";
+    if (npAutoCloseSecPending == 0) {
+      valueText = "0 ms";
+    } else if (npAutoCloseSecPending >= 60) {
+      valueText = "NEVER";
     } else {
-      valueText = std::to_string(cfgMsgAutoCloseMsPending) + " ms";
+      valueText = std::to_string(mapNpCloseMs(npAutoCloseSecPending)) + " ms";
     }
     minText = "0 ms";
-    maxText = "DISABLED";
+    maxText = "NEVER";
+  } else if (adjustTarget == ADJ_CFG_CLOSE) {
+    targetValue = static_cast<float>(cfgMsgAutoClosePending);
+    minValue = 0.0f;
+    maxValue = 60.0f;
+    label = "AUTO CLOSE MSG";
+    if (cfgMsgAutoClosePending == 0) {
+      valueText = "0 ms";
+    } else if (cfgMsgAutoClosePending >= 60) {
+      valueText = "NEVER";
+    } else {
+      valueText = std::to_string(mapCfgCloseMs(cfgMsgAutoClosePending)) + " ms";
+    }
+    minText = "0 ms";
+    maxText = "NEVER";
   }
 
   if (adjustTarget != lastTarget) {
@@ -1990,7 +2395,11 @@ void renderAdjustScreen() {
   float progress = 0.0f;
   if (maxValue > minValue) {
     progress = (shownValue - minValue) / (maxValue - minValue);
+  } else if (maxValue < minValue) {
+    progress = (minValue - shownValue) / (minValue - maxValue);
   }
+  if (progress < 0.0f) progress = 0.0f;
+  if (progress > 1.0f) progress = 1.0f;
   if (adjustTarget == ADJ_VOLUME) {
     valueText = std::to_string(static_cast<int>(std::round(shownValue))) + "%";
   } else if (adjustTarget == ADJ_SPI) {
@@ -2007,13 +2416,23 @@ void renderAdjustScreen() {
     valueText = std::to_string(static_cast<int>(std::round(shownValue))) + " ms";
   } else if (adjustTarget == ADJ_LYRIC_SCROLL_CPS) {
     valueText = std::to_string(static_cast<int>(std::round(shownValue))) + " cps";
-  } else if (adjustTarget == ADJ_CFG_CLOSE) {
-    if (shownValue <= 0.5f) {
-      valueText = "INSTANT";
-    } else if (shownValue >= 65534.5f) {
-      valueText = "DISABLED";
+  } else if (adjustTarget == ADJ_NP_CLOSE_SEC) {
+    int level = static_cast<int>(std::round(shownValue));
+    if (level <= 0) {
+      valueText = "0 ms";
+    } else if (level >= 60) {
+      valueText = "NEVER";
     } else {
-      valueText = std::to_string(static_cast<int>(std::round(shownValue))) + " ms";
+      valueText = std::to_string(mapNpCloseMs(static_cast<uint8_t>(level))) + " ms";
+    }
+  } else if (adjustTarget == ADJ_CFG_CLOSE) {
+    int level = static_cast<int>(std::round(shownValue));
+    if (level <= 0) {
+      valueText = "0 ms";
+    } else if (level >= 60) {
+      valueText = "NEVER";
+    } else {
+      valueText = std::to_string(mapCfgCloseMs(static_cast<uint8_t>(level))) + " ms";
     }
   }
 
@@ -2067,9 +2486,12 @@ void renderAdjustScreen() {
   } else if (adjustTarget == ADJ_LYRIC_SCROLL_CPS) {
     help1 = "\u6b4c\u8bcd\u6eda\u52a8\u901f\u5ea6";
     help2 = "\u5355\u4f4d: \u5b57/\u79d2";
+  } else if (adjustTarget == ADJ_NP_CLOSE_SEC) {
+    help1 = "\u97f3\u4e50\u6d6e\u7a97\u8d85\u65f6\u5173\u95ed";
+    help2 = "0ms=\u7acb\u5373  NEVER=\u4e0d\u81ea\u52a8\u5173\u95ed";
   } else if (adjustTarget == ADJ_CFG_CLOSE) {
     help1 = "\u914d\u7f6e\u5bfc\u5165\u4fe1\u606f\u81ea\u52a8\u5173\u95ed";
-    help2 = "0=\u7acb\u5373 60=\u7981\u7528";
+    help2 = "0ms=\u7acb\u5373  NEVER=\u4e0d\u81ea\u52a8\u5173\u95ed";
   }
 
   if (!help1.empty()) {
@@ -2120,6 +2542,52 @@ void renderLinkIndicator(uint32_t nowMs) {
   int y = sys.screenHeight - 4;
   if (x < 0 || y < 0) return;
   HAL::drawBox(x, y, 3, 3);
+}
+
+void renderPopupBackground() {
+  if (nowPlaying.active) {
+    renderNowPlayingOverlay();
+  } else {
+    hal.clearImageOverlay();
+    hal.clearBarOverlay();
+  }
+}
+
+void renderStatusBar(uint32_t nowMs, int fpsValue, int cpuValue) {
+  std::string text;
+  bool usbReady = isUsbLinkReady();
+  bool bleClientReady = isBleClientLinkReady();
+  bool bleBasicReady = isBleBasicLinkReady();
+  bool linkReady = usbReady || bleClientReady;
+
+  if (usbReady && bleClientReady) text = "U+BC";
+  else if (usbReady && bleBasicReady) text = "U+BB";
+  else if (usbReady) text = "USB";
+  else if (bleClientReady) text = "BLEC";
+  else if (bleBasicReady) text = "BLEB";
+  else text = "OFF";
+
+  std::string perf;
+  if (showFps) perf += "F:" + std::to_string(fpsValue);
+  if (showCpu) {
+    if (!perf.empty()) perf += " ";
+    perf += "C:" + std::to_string(cpuValue);
+  }
+  if (showUp) {
+    if (!perf.empty()) perf += " ";
+    perf += "U:" + std::to_string(upBps / 1024) + "K";
+  }
+  if (showDown) {
+    if (!perf.empty()) perf += " ";
+    perf += "D:" + std::to_string(downBps / 1024) + "K";
+  }
+  if (!perf.empty()) {
+    text += "  ";
+    text += perf;
+  }
+
+  bool blink = (!linkReady) && (((nowMs / 700) % 2) != 0);
+  hal.setStatusBar(text, linkReady, blink);
 }
 
 void renderTestPattern() {
@@ -2243,10 +2711,20 @@ void renderAboutInfo() {
   drawLine(buf);
 
   // Connection status
-  if (bleEnabled && ble_is_connected()) {
-    drawLine("Conn: BLE");
-  } else if (handshakeOk) {
-    drawLine("Conn: USB");
+  bool usbReady = isUsbLinkReady();
+  bool bleBasicReady = isBleBasicLinkReady();
+  bool bleClientReady = isBleClientLinkReady();
+  CommMode activeMode = pickCommandMode();
+  if (usbReady && bleClientReady) {
+    drawLine("Conn: Wired + BLE Client");
+  } else if (usbReady && bleBasicReady) {
+    drawLine("Conn: Wired + BLE Basic");
+  } else if (usbReady) {
+    drawLine("Conn: Wired");
+  } else if (bleClientReady) {
+    drawLine("Conn: BLE Client");
+  } else if (bleBasicReady) {
+    drawLine("Conn: BLE Basic");
   } else {
     drawLine("Conn: None");
   }
@@ -2287,14 +2765,18 @@ void renderAboutInfo() {
   uint32_t psramFree = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
   snprintf(buf, sizeof(buf), "PSRAM: %u KB", static_cast<unsigned>(psramFree / 1024));
   drawLine(buf);
-  const char *modeName = (commMode == COMM_USB) ? "USB" : (commMode == COMM_BLE) ? "BLE" : "AUTO";
-  snprintf(buf, sizeof(buf), "Mode: %s", modeName);
+  const char *modeName = commModeLabel(commMode);
+  snprintf(buf, sizeof(buf), "Prefer: %s", modeName);
+  drawLine(buf);
+  snprintf(buf, sizeof(buf), "Active: %s", activeMode == COMM_AUTO ? "N/A" : commModeLabel(activeMode));
   drawLine(buf);
   snprintf(buf, sizeof(buf), "BLE Ena: %s", bleEnabled ? "Yes" : "No");
   drawLine(buf);
-  snprintf(buf, sizeof(buf), "BLE Conn: %s", (bleEnabled && ble_is_connected()) ? "Yes" : "No");
+  snprintf(buf, sizeof(buf), "BLE Basic: %s", bleBasicReady ? "Yes" : "No");
   drawLine(buf);
-  snprintf(buf, sizeof(buf), "USB Link: %s", handshakeOk ? "OK" : "None");
+  snprintf(buf, sizeof(buf), "BLE Client: %s", bleClientReady ? "Yes" : "No");
+  drawLine(buf);
+  snprintf(buf, sizeof(buf), "USB Link: %s", usbReady ? "OK" : "None");
   drawLine(buf, 2);
   
   // Divider line
@@ -2376,13 +2858,19 @@ extern "C" void app_main(void) {
     fontColorValue = 17;
     scrollTimeValue = 30;
     lyricScrollCpsValue = 8;
+    npAutoCloseSecValue = 8;
+    cfgMsgAutoCloseMs = 5000;
+    commMode = COMM_AUTO;
   }
 
   loadSettings();
+  cfgMsgAutoCloseValue = mapCfgCloseFromMs(cfgMsgAutoCloseMs);
+  cfgMsgAutoClosePending = cfgMsgAutoCloseValue;
   applySelectorSpeed();
   applyWrapPause();
   applyScrollDuration();
   applyLyricScrollSpeed();
+  applyNowPlayingAutoClose();
   applyFontColor();
 
   if (SIMPLE_DISPLAY_ONLY) {
@@ -2403,6 +2891,7 @@ extern "C" void app_main(void) {
   
   // Initialize BLE service
   ESP_LOGI("MAIN", "Initializing BLE service...");
+  ble_set_debug_callback(bleDebugForward);
   if (ble_service_init("SongLed")) {
     bleEnabled = true;
     ESP_LOGI("MAIN", "BLE service initialized successfully");
@@ -2430,6 +2919,7 @@ extern "C" void app_main(void) {
   scaleUi(2.0f);
   buildMenus();
   launcher.init(menuMain);
+  launcher.setPopRenderHook(renderPopupBackground);
 
   sendVolumeGet();
 
@@ -2441,6 +2931,8 @@ extern "C" void app_main(void) {
   uint64_t busyUsAccum = 0;
   uint64_t totalUsAccum = 0;
   uint64_t lastLoopUs = 0;
+  uint32_t lastBtUiUpdateMs = 0;
+  uint32_t lastLockUiUpdateMs = 0;
 
   while (true) {
     uint64_t loopStartUs = esp_timer_get_time();
@@ -2453,6 +2945,14 @@ extern "C" void app_main(void) {
     readSerial();
 
     uint32_t nowMs = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
+    if (nowMs - lastLockUiUpdateMs >= 120) {
+      lastLockUiUpdateMs = nowMs;
+      updateControlMenuAvailability();
+    }
+    if (nowMs - lastBtUiUpdateMs >= 500) {
+      lastBtUiUpdateMs = nowMs;
+      updateBluetoothMenuItems();
+    }
     
     // 心跳超时检测 - 10秒未收到任何消息则重置连接
     if (handshakeOk && lastRxMs > 0 && (nowMs - lastRxMs > HANDSHAKE_TIMEOUT_MS)) {
@@ -2467,18 +2967,23 @@ extern "C" void app_main(void) {
       sendHello();
     }
 
-    if (nowPlaying.active && nowPlaying.lastUpdateMs > 0 &&
-        (nowMs - nowPlaying.lastUpdateMs > NOW_PLAYING_TIMEOUT_MS)) {
-      nowPlaying.active = false;
-      nowPlaying.coverValid = false;
-      nowPlaying.coverReceiving = false;
-      nowPlaying.coverIndex = 0;
-      nowPlaying.coverTotal = NP_COVER_PIXELS;
-      memset(nowPlaying.coverFront, 0, sizeof(nowPlaying.coverFront));
-      memset(nowPlaying.coverBack, 0, sizeof(nowPlaying.coverBack));
+    uint16_t npCloseMs = mapNpCloseMs(npAutoCloseSecValue);
+    if (npCloseMs < 65535) {
+      uint32_t npTimeoutMs = static_cast<uint32_t>(npCloseMs);
+      if (nowPlaying.active && nowPlaying.lastUpdateMs > 0 &&
+          (nowMs - nowPlaying.lastUpdateMs > npTimeoutMs)) {
+        clearNowPlayingState(true);
+      }
+      if (!nowPlaying.active && currentLyric.active && lyricLastUpdateMs > 0 &&
+          (nowMs - lyricLastUpdateMs > npTimeoutMs)) {
+        currentLyric.active = false;
+        nextLyric.active = false;
+        lyricScrollOffset = 0;
+        lyricLastUpdateMs = 0;
+      }
     }
 
-  if (adjustActive) {
+    if (adjustActive) {
     hal.clearImageOverlay();
     hal.clearBarOverlay();
     if (appMode == MODE_TEST_PATTERN) {
@@ -2488,8 +2993,7 @@ extern "C" void app_main(void) {
     } else {
       renderAdjustScreen();
     }
-    renderPerfOverlay(fpsValue, cpuValue);
-    renderLinkIndicator(nowMs);
+    renderStatusBar(nowMs, fpsValue, cpuValue);
     HAL::canvasUpdate();
   } else {
       hal.clearArcOverlay();
@@ -2501,8 +3005,7 @@ extern "C" void app_main(void) {
         hal.clearBarOverlay();
         renderLyrics(); // Display lyrics
       }
-      renderPerfOverlay(fpsValue, cpuValue);
-      renderLinkIndicator(nowMs);
+      renderStatusBar(nowMs, fpsValue, cpuValue);
       HAL::canvasUpdate();
     }
 

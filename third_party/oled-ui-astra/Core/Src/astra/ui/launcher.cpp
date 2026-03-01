@@ -7,57 +7,61 @@
 namespace astra {
 
 void Launcher::popInfo(std::string _info, uint16_t _time) {
-  static bool init = false;
-  static unsigned long long int beginTime = this->time;;
-  static bool onRender = false;
+  bool onRender = true;
+  bool stickyByBackOnly = (_time == 65535);
+  uint32_t beginTimeMs = HAL::millis();
 
-  if (!init) {
-    init = true;
-    beginTime = this->time;
-    onRender = true;
-  }
+  float padX = getUIConfig().popMargin;
+  float padTop = 1.0f;
+  float padBottom = 2.0f;
 
-  float wPop = HAL::getFontWidth(_info) + 2 * getUIConfig().popMargin;  //宽度
-  float hPop = HAL::getFontHeight() + 2 * getUIConfig().popMargin;  //高度
-  float yPop = 0 - hPop - 8; //从屏幕上方滑入
-  float yPopTrg = (HAL::getSystemConfig().screenHeight - hPop) / 3;  //目标位置 中间偏上
-  float xPop = (HAL::getSystemConfig().screenWeight - wPop) / 2;  //居中
+  float wPop = HAL::getFontWidth(_info) + 2 * padX;
+  float hPop = HAL::getFontHeight() + padTop + padBottom;
+  float yPop = 0 - hPop - 8;
+  float yPopTrg = (HAL::getSystemConfig().screenHeight - hPop) / 3;
+  float xPop = (HAL::getSystemConfig().screenWeight - wPop) / 2;
+  float yHide = 0 - hPop - 8;
 
   while (onRender) {
-    time++;
+    Animation::tick();
+    time = HAL::millis();
 
     HAL::canvasClear();
-    /*渲染一帧*/
     currentMenu->render(camera->getPosition());
     selector->render(camera->getPosition());
     camera->update(currentMenu, selector);
-    /*渲染一帧*/
+    if (popRenderHook) {
+      popRenderHook();
+    }
 
     HAL::setDrawType(0);
     HAL::drawRBox(xPop - 4, yPop - 4, wPop + 8, hPop + 8, getUIConfig().popRadius + 2);
-    HAL::setDrawType(1);  //反色显示
-    HAL::drawRFrame(xPop - 1, yPop - 1, wPop + 2, hPop + 2, getUIConfig().popRadius);  //绘制一个圆角矩形
-    HAL::drawEnglish(xPop + getUIConfig().popMargin,
-                     yPop + getUIConfig().popMargin + HAL::getFontHeight(),
-                     _info);  //绘制文字
+    HAL::setDrawType(1);
+    HAL::drawRFrame(xPop - 1, yPop - 1, wPop + 2, hPop + 2, getUIConfig().popRadius);
+    HAL::drawEnglish(xPop + padX,
+                     yPop + padTop + HAL::getFontHeight() - 2,
+                     _info);
 
     HAL::canvasUpdate();
+    Animation::move(&yPop, yPopTrg, getUIConfig().popSpeed);
 
-    Animation::move(&yPop, yPopTrg, getUIConfig().popSpeed);  //动画
-
-    //这里条件可以加上一个如果按键按下 就滑出
-    if (time - beginTime >= _time) yPopTrg = 0 - hPop - 8;  //滑出
+    if (!stickyByBackOnly && time - beginTimeMs >= _time) yPopTrg = yHide;
 
     HAL::keyScan();
     if (HAL::getAnyKey()) {
-      for (unsigned char i = 0; i < key::KEY_NUM; i++)
-        if (HAL::getKeyMap()[i] == key::CLICK) yPopTrg = 0 - hPop - 8;  //滑出
+      for (unsigned char i = 0; i < key::KEY_NUM; i++) {
+        if (HAL::getKeyMap()[i] == key::CLICK) {
+          if (!stickyByBackOnly || i == key::KEY_0) {
+            yPopTrg = yHide;
+          }
+        }
+      }
       std::fill(HAL::getKeyMap(), HAL::getKeyMap() + key::KEY_NUM, key::INVALID);
     }
 
-    if (yPop == 0 - hPop - 8) {
-      onRender = false;  //退出条件
-      init = false;
+    if (std::fabs(yPop - yHide) <= 1.0f) {
+      yPop = yHide;
+      onRender = false;
     }
   }
 }

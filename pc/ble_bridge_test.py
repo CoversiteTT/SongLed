@@ -5,6 +5,7 @@ Requires: bleak library (pip install bleak)
 
 import asyncio
 import sys
+import select
 from bleak import BleakClient, BleakScanner
 
 # Service and Characteristic UUIDs (must match ESP32)

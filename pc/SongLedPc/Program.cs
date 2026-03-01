@@ -73,6 +73,13 @@ internal static class Program
 
 internal sealed class TrayAppContext : ApplicationContext
 {
+    private enum LinkMode
+    {
+        Auto = 0,
+        UsbOnly,
+        BleOnly
+    }
+
     private readonly NotifyIcon _trayIcon;
     private readonly System.Windows.Forms.Timer _timer;
     private readonly SerialWorker _serial;
@@ -84,6 +91,13 @@ internal sealed class TrayAppContext : ApplicationContext
     private volatile bool _connecting;
     private bool _manualDisconnect;
     private long _lastHandshakeMs;
+    private long _lastBleScanMs;
+    private LinkMode _linkMode = LinkMode.Auto;
+    private string? _manualPort;
+    private string? _manualBleDeviceId;
+    private string? _manualBleDeviceName;
+    private readonly AppState _appState;
+    private volatile bool _exiting;
 
     public TrayAppContext(string[] args)
     {
@@ -93,10 +107,25 @@ internal sealed class TrayAppContext : ApplicationContext
         _smtc = new SmtcBridge(_log, _serial);
         _configManager = new DeviceConfigManager(_serial, _log);
         _serial.HelloReceived += () => _smtc.ResendNowPlaying();
+        _appState = AppState.Load();
+        _manualPort = _appState.LastPort;
+        _manualBleDeviceId = _appState.LastBleDeviceId;
+        _manualBleDeviceName = _appState.LastBleDeviceName;
+        if (Enum.IsDefined(typeof(LinkMode), _appState.LastLinkMode))
+        {
+            _linkMode = (LinkMode)_appState.LastLinkMode;
+        }
 
         var menu = new ContextMenuStrip();
         var statusItem = new ToolStripMenuItem("状态: 启动中") { Enabled = false };
         var portItem = new ToolStripMenuItem("串口: 未连接") { Enabled = false };
+        var linkMenu = new ToolStripMenuItem("连接设置");
+        var linkAutoItem = new ToolStripMenuItem("模式: 自动");
+        var linkUsbItem = new ToolStripMenuItem("模式: 仅USB");
+        var linkBleItem = new ToolStripMenuItem("模式: 仅蓝牙");
+        var linkPortMenu = new ToolStripMenuItem("手动串口");
+        var linkBleDeviceMenu = new ToolStripMenuItem("手动蓝牙设备");
+        var linkBleNowItem = new ToolStripMenuItem("立即蓝牙连接");
         var testLyricItem = new ToolStripMenuItem("测试歌词");
         var autoStartItem = new ToolStripMenuItem("开机自启: 关");
         var reconnectItem = new ToolStripMenuItem("立即重连");
@@ -107,6 +136,7 @@ internal sealed class TrayAppContext : ApplicationContext
         menu.Items.Add(statusItem);
         menu.Items.Add(portItem);
         menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(linkMenu);
         menu.Items.Add(testLyricItem);
         menu.Items.Add(autoStartItem);
         menu.Items.Add(reconnectItem);
@@ -116,6 +146,131 @@ internal sealed class TrayAppContext : ApplicationContext
         menu.Items.Add(importConfigItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(exitItem);
+
+        linkMenu.DropDownItems.Add(linkAutoItem);
+        linkMenu.DropDownItems.Add(linkUsbItem);
+        linkMenu.DropDownItems.Add(linkBleItem);
+        linkMenu.DropDownItems.Add(new ToolStripSeparator());
+        linkMenu.DropDownItems.Add(linkPortMenu);
+        linkMenu.DropDownItems.Add(linkBleDeviceMenu);
+        linkMenu.DropDownItems.Add(linkBleNowItem);
+
+        void SetLinkMode(LinkMode mode)
+        {
+            _linkMode = mode;
+            linkAutoItem.Checked = mode == LinkMode.Auto;
+            linkUsbItem.Checked = mode == LinkMode.UsbOnly;
+            linkBleItem.Checked = mode == LinkMode.BleOnly;
+            _appState.LastLinkMode = (int)mode;
+            _appState.Save();
+        }
+
+        void RefreshPortMenu()
+        {
+            linkPortMenu.DropDownItems.Clear();
+            var autoPortItem = new ToolStripMenuItem("自动检测")
+            {
+                Checked = string.IsNullOrWhiteSpace(_manualPort)
+            };
+            autoPortItem.Click += (_, _) =>
+            {
+                _manualPort = null;
+                _appState.LastPort = null;
+                _appState.Save();
+                _manualDisconnect = false;
+                StartConnect(force: true);
+            };
+            linkPortMenu.DropDownItems.Add(autoPortItem);
+            linkPortMenu.DropDownItems.Add(new ToolStripSeparator());
+
+            var ports = SerialPort.GetPortNames().OrderBy(p => p, StringComparer.OrdinalIgnoreCase).ToArray();
+            if (ports.Length == 0)
+            {
+                linkPortMenu.DropDownItems.Add(new ToolStripMenuItem("(无串口)") { Enabled = false });
+                return;
+            }
+
+            foreach (var p in ports)
+            {
+                var item = new ToolStripMenuItem(p)
+                {
+                    Checked = string.Equals(_manualPort, p, StringComparison.OrdinalIgnoreCase)
+                };
+                item.Click += (_, _) =>
+                {
+                    _manualPort = p;
+                    _appState.LastPort = p;
+                    _appState.Save();
+                    _manualDisconnect = false;
+                    StartConnect(force: true);
+                };
+                linkPortMenu.DropDownItems.Add(item);
+            }
+        }
+
+        async Task RefreshBleDeviceMenuAsync()
+        {
+            linkBleDeviceMenu.DropDownItems.Clear();
+            var loading = new ToolStripMenuItem("扫描中...") { Enabled = false };
+            linkBleDeviceMenu.DropDownItems.Add(loading);
+
+            IReadOnlyList<(string Id, string Name)> devices;
+            try
+            {
+                devices = await _serial.ListBleDevicesAsync();
+            }
+            catch (Exception ex)
+            {
+                _log.Info($"BLE list failed: {ex.Message}");
+                devices = Array.Empty<(string, string)>();
+            }
+
+            linkBleDeviceMenu.DropDownItems.Clear();
+            var autoBleItem = new ToolStripMenuItem("自动检测")
+            {
+                Checked = string.IsNullOrWhiteSpace(_manualBleDeviceId)
+            };
+            autoBleItem.Click += (_, _) =>
+            {
+                _manualBleDeviceId = null;
+                _manualBleDeviceName = null;
+                _appState.LastBleDeviceId = null;
+                _appState.LastBleDeviceName = null;
+                _appState.Save();
+                _manualDisconnect = false;
+                StartConnect(force: true);
+            };
+            linkBleDeviceMenu.DropDownItems.Add(autoBleItem);
+            linkBleDeviceMenu.DropDownItems.Add(new ToolStripSeparator());
+
+            if (devices.Count == 0)
+            {
+                linkBleDeviceMenu.DropDownItems.Add(new ToolStripMenuItem("(未发现蓝牙设备)") { Enabled = false });
+                return;
+            }
+
+            foreach (var d in devices)
+            {
+                var text = string.IsNullOrWhiteSpace(d.Name) ? d.Id : d.Name;
+                var item = new ToolStripMenuItem(text)
+                {
+                    Checked = string.Equals(_manualBleDeviceId, d.Id, StringComparison.OrdinalIgnoreCase),
+                    ToolTipText = d.Id
+                };
+                item.Click += (_, _) =>
+                {
+                    _manualBleDeviceId = d.Id;
+                    _manualBleDeviceName = d.Name;
+                    _appState.LastBleDeviceId = d.Id;
+                    _appState.LastBleDeviceName = d.Name;
+                    _appState.Save();
+                    SetLinkMode(LinkMode.BleOnly);
+                    _manualDisconnect = false;
+                    StartConnect(force: true);
+                };
+                linkBleDeviceMenu.DropDownItems.Add(item);
+            }
+        }
 
         _trayIcon = new NotifyIcon
         {
@@ -127,6 +282,32 @@ internal sealed class TrayAppContext : ApplicationContext
 
         ApplyAutoStartAction(_settings.AutoStartAction, showToast: false);
         UpdateAutoStartMenu(autoStartItem);
+        SetLinkMode(_linkMode);
+        linkPortMenu.DropDownOpening += (_, _) => RefreshPortMenu();
+        linkBleDeviceMenu.DropDownOpening += async (_, _) => await RefreshBleDeviceMenuAsync();
+        linkAutoItem.Click += (_, _) =>
+        {
+            SetLinkMode(LinkMode.Auto);
+            _manualDisconnect = false;
+            StartConnect(force: true);
+        };
+        linkUsbItem.Click += (_, _) =>
+        {
+            SetLinkMode(LinkMode.UsbOnly);
+            _manualDisconnect = false;
+            StartConnect(force: true);
+        };
+        linkBleItem.Click += (_, _) =>
+        {
+            SetLinkMode(LinkMode.BleOnly);
+            _manualDisconnect = false;
+            StartConnect(force: true);
+        };
+        linkBleNowItem.Click += (_, _) =>
+        {
+            _manualDisconnect = false;
+            StartConnect(force: true);
+        };
         testLyricItem.Click += (_, _) => TestLyrics();
         autoStartItem.Click += (_, _) =>
         {
@@ -138,7 +319,7 @@ internal sealed class TrayAppContext : ApplicationContext
         disconnectItem.Click += (_, _) =>
         {
             _manualDisconnect = true;
-            _serial.Close();
+            _serial.Close(fast: true);
             _currentPort = null;
             _log.Info("断开连接");
         };
@@ -150,7 +331,9 @@ internal sealed class TrayAppContext : ApplicationContext
         _timer.Tick += (_, _) =>
         {
             StartConnect(force: false);
-            statusItem.Text = _serial.IsOpen ? "状态: 已连接" : "状态: 等待设备";
+            statusItem.Text = _serial.IsConnected
+                ? (_serial.IsBleOpen ? "\u72B6\u6001: \u5DF2\u8FDE\u63A5(BLE)" : "\u72B6\u6001: \u5DF2\u8FDE\u63A5")
+                : "\u72B6\u6001: \u7B49\u5F85\u8BBE\u5907";
             portItem.Text = $"串口: {(_currentPort ?? "未连接")}";
             UpdateAutoStartMenu(autoStartItem);
         };
@@ -162,6 +345,7 @@ internal sealed class TrayAppContext : ApplicationContext
 
     private void StartConnect(bool force)
     {
+        if (_exiting) return;
         if (!force && _manualDisconnect) return;
         if (_connecting) return;
         _connecting = true;
@@ -180,29 +364,115 @@ internal sealed class TrayAppContext : ApplicationContext
 
     private void AttemptConnect(bool force)
     {
-        string? port = ResolvePort(force);
-        if (string.IsNullOrWhiteSpace(port))
+        if (_exiting) return;
+
+        if (force && _serial.IsOpen)
         {
-            if (force) _log.Info("未找到设备串口");
-            if (_serial.IsOpen) _serial.Close();
+            _serial.Close();
             _currentPort = null;
+        }
+
+        if (!force && _serial.IsConnected)
+        {
+            _currentPort = _serial.ConnectionLabel;
             return;
         }
 
-        if (!force && _serial.IsOpen && string.Equals(_currentPort, port, StringComparison.OrdinalIgnoreCase))
+        bool allowUsb = _linkMode != LinkMode.BleOnly;
+        bool allowBle = _linkMode != LinkMode.UsbOnly;
+        // Auto mode policy: wired first, BLE fallback.
+        bool bleFirst = allowBle && (_linkMode == LinkMode.BleOnly);
+        bool triedBle = false;
+        string? port = null;
+
+        if (bleFirst)
+        {
+            triedBle = true;
+            if (TryConnectBle(force))
+            {
+                return;
+            }
+        }
+
+        if (allowUsb)
+        {
+            port = ResolvePort(force);
+            if (!string.IsNullOrWhiteSpace(port))
+            {
+                _serial.Open(port);
+                if (_serial.IsUsbOpen)
+                {
+                    long start = Environment.TickCount64;
+                    while (Environment.TickCount64 - start < 1200)
+                    {
+                        if (_serial.IsUsbReady)
+                        {
+                            _currentPort = _serial.ConnectionLabel;
+                            _appState.LastPort = port;
+                            _appState.LastConnected = DateTime.Now;
+                            _appState.Save();
+                            return;
+                        }
+                        Thread.Sleep(80);
+                    }
+
+                    _log.Info($"USB opened on {port} but no HELLO");
+                    _serial.Close();
+                }
+            }
+        }
+
+        if (allowBle && !triedBle && TryConnectBle(force))
         {
             return;
         }
 
-        _serial.Open(port);
-        _currentPort = port;
+        if (string.IsNullOrWhiteSpace(port) && force)
+        {
+            _log.Info("No available link found");
+        }
+
+        if (_serial.IsOpen)
+        {
+            _serial.Close();
+        }
+        _currentPort = null;
+    }
+
+    private bool TryConnectBle(bool force)
+    {
+        long now = Environment.TickCount64;
+        bool shouldTryBle = force || (now - _lastBleScanMs > 2000);
+        if (!shouldTryBle) return false;
+
+        _lastBleScanMs = now;
+        string? targetId = _manualBleDeviceId ?? _appState.LastBleDeviceId;
+        string targetName = _manualBleDeviceName ?? _appState.LastBleDeviceName ?? "SongLed";
+        bool bleOk = _serial.OpenBleAsync(targetId, targetName).GetAwaiter().GetResult();
+        if (!bleOk) return false;
+
+        _currentPort = _serial.ConnectionLabel;
+        _appState.LastConnected = DateTime.Now;
+        _appState.LastBleDeviceId = _serial.BleDeviceId ?? targetId;
+        _appState.LastBleDeviceName = _serial.BleDeviceName ?? targetName;
+        _appState.Save();
+        return true;
     }
 
     private string? ResolvePort(bool force)
     {
-        if (!force && _serial.IsOpen && !string.IsNullOrWhiteSpace(_currentPort))
+        if (!force && _serial.IsConnected && !string.IsNullOrWhiteSpace(_currentPort))
         {
             return _currentPort;
+        }
+
+        if (!string.IsNullOrWhiteSpace(_manualPort))
+        {
+            var portNames = SerialPort.GetPortNames();
+            if (portNames.Any(p => string.Equals(p, _manualPort, StringComparison.OrdinalIgnoreCase)))
+            {
+                return _manualPort;
+            }
         }
 
         if (!string.IsNullOrWhiteSpace(_settings.Port))
@@ -230,9 +500,10 @@ internal sealed class TrayAppContext : ApplicationContext
 
     private void Exit()
     {
+        _exiting = true;
         _timer.Stop();
         _smtc.Dispose();
-        _serial.Close();
+        _serial.Close(fast: true);
         _trayIcon.Visible = false;
         _trayIcon.Dispose();
         Application.Exit();
@@ -548,15 +819,15 @@ internal static class DeviceLocator
                     Handshake = Handshake.None
                 };
                 sp.Open();
-                Thread.Sleep(150);
+                Thread.Sleep(80);
                 sp.DiscardInBuffer();
                 var sw = Stopwatch.StartNew();
                 long nextPing = 0;
-                while (sw.ElapsedMilliseconds < 4000)
+                while (sw.ElapsedMilliseconds < 1200)
                 {
                     if (sw.ElapsedMilliseconds >= nextPing)
                     {
-                        nextPing = sw.ElapsedMilliseconds + 500;
+                        nextPing = sw.ElapsedMilliseconds + 250;
                         sp.WriteLine("HELLO");
                     }
                     try
@@ -592,16 +863,28 @@ internal sealed class SerialWorker
     private Thread? _reader;
     private volatile bool _running;
     private List<MMDevice> _renderDevices = new();
+    private List<MMDevice> _captureDevices = new();
     private bool _helloNotified;
     private DateTime _lastHelloAck = DateTime.MinValue;
     private TaskCompletionSource<string>? _cfgResponseWaiter;
+    private readonly BleLinkClient _ble;
 
-    public bool IsOpen => _port != null && _port.IsOpen;
+    public bool IsUsbOpen => _port != null && _port.IsOpen;
+    public bool IsUsbReady => IsUsbOpen && _helloNotified;
+    public bool IsBleOpen => _ble.IsConnected;
+    public bool IsConnected => IsUsbReady || IsBleOpen;
+    public bool IsOpen => IsUsbOpen || IsBleOpen;
+    public string? BleDeviceId => _ble.ConnectedDeviceId ?? _ble.LastDeviceId;
+    public string? BleDeviceName => _ble.IsConnected ? _ble.ConnectedName : _ble.LastDeviceName;
+    public string ConnectionLabel => IsUsbOpen
+        ? (_port?.PortName ?? "USB")
+        : (IsBleOpen ? $"BLE:{_ble.ConnectedName}" : "Disconnected");
     public event Action? HelloReceived;
 
     public SerialWorker(Logger log)
     {
         _log = log;
+        _ble = new BleLinkClient(_log, HandleLine);
     }
 
     public void Open(string portName)
@@ -638,7 +921,26 @@ internal sealed class SerialWorker
         _log.Info($"已连接 {portName}");
     }
 
-    public void Close()
+
+    public async Task<bool> OpenBleAsync(string? deviceId = null, string? nameHint = "SongLed")
+    {
+        if (IsBleOpen) return true;
+        Close();
+        _helloNotified = false;
+        _lastHelloAck = DateTime.MinValue;
+        bool ok = await _ble.ConnectAsync(nameHint, deviceId);
+        if (!ok) return false;
+        SendLine("HELLO");
+        _log.Info($"BLE connected: {_ble.ConnectedName}");
+        return true;
+    }
+
+    public Task<IReadOnlyList<(string Id, string Name)>> ListBleDevicesAsync()
+    {
+        return _ble.ListDevicesAsync();
+    }
+
+    public void Close(bool fast = false)
     {
         _running = false;
         try
@@ -650,6 +952,30 @@ internal sealed class SerialWorker
             // ignore
         }
         _port = null;
+        if (_reader != null && _reader.IsAlive)
+        {
+            try
+            {
+                _reader.Join(500);
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+        _reader = null;
+        try
+        {
+            var bleTask = _ble.DisconnectAsync();
+            if (!fast && !bleTask.Wait(800))
+            {
+                _log.Info("BLE disconnect timeout");
+            }
+        }
+        catch
+        {
+            // ignore
+        }
     }
 
     private void ReadLoop()
@@ -749,6 +1075,19 @@ internal sealed class SerialWorker
             SendCurrentSpeaker();
             return;
         }
+        if (line.Equals("MIC LIST", StringComparison.OrdinalIgnoreCase))
+        {
+            _log.Info("鏀跺埌MIC LIST璇锋眰");
+            SendMicrophoneList();
+            return;
+        }
+        if (line.StartsWith("MIC SET", StringComparison.OrdinalIgnoreCase))
+        {
+            int index = ParseInt(line, 7);
+            SetDefaultMicrophone(index);
+            SendCurrentMicrophone();
+            return;
+        }
         if (line.StartsWith("CFG", StringComparison.OrdinalIgnoreCase))
         {
             // Handle config commands: CFG SET (response from device)
@@ -790,14 +1129,22 @@ internal sealed class SerialWorker
     {
         lock (_sendLock)
         {
-            if (_port == null || !_port.IsOpen) return;
-            try
+            if (_port != null && _port.IsOpen)
             {
-                _port.WriteLine(text);
+                try
+                {
+                    _port.WriteLine(text);
+                }
+                catch (Exception ex)
+                {
+                    _log.Info($"Serial send failed: {ex.Message}");
+                }
+                return;
             }
-            catch (Exception ex)
+
+            if (IsBleOpen)
             {
-                _log.Info($"串口发送失败: {ex.Message}");
+                _ = _ble.SendLineAsync(text);
             }
         }
     }
@@ -845,6 +1192,18 @@ internal sealed class SerialWorker
         try
         {
             return _enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private MMDevice? GetDefaultCaptureDevice()
+    {
+        try
+        {
+            return _enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Multimedia);
         }
         catch
         {
@@ -902,6 +1261,11 @@ internal sealed class SerialWorker
         _renderDevices = _enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active).ToList();
     }
 
+    private void RefreshCaptureDevices()
+    {
+        _captureDevices = _enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active).ToList();
+    }
+
     private void SendSpeakerList()
     {
         try
@@ -956,6 +1320,58 @@ internal sealed class SerialWorker
         catch (Exception ex)
         {
             _log.Info($"设置默认设备失败: {ex.Message}");
+        }
+    }
+
+    private void SendMicrophoneList()
+    {
+        try
+        {
+            _log.Info("寮€濮嬪彂閫侀害鍏嬮鍒楄〃");
+            RefreshCaptureDevices();
+            _log.Info($"鏋氫妇鍒?{_captureDevices.Count} 涓害鍏嬮");
+            SendLine("MIC BEGIN");
+            for (int i = 0; i < _captureDevices.Count; i++)
+            {
+                string name = Sanitize(_captureDevices[i].FriendlyName);
+                SendLine($"MIC ITEM {i} {name}");
+            }
+            SendLine("MIC END");
+            SendCurrentMicrophone();
+        }
+        catch (Exception ex)
+        {
+            _log.Info($"鍙戦€侀害鍏嬮鍒楄〃澶辫触: {ex.Message}");
+        }
+    }
+
+    private void SendCurrentMicrophone()
+    {
+        var dev = GetDefaultCaptureDevice();
+        if (dev == null) return;
+        if (_captureDevices.Count == 0) RefreshCaptureDevices();
+        int index = _captureDevices.FindIndex(d => d.ID == dev.ID);
+        if (index >= 0)
+        {
+            SendLine($"MIC CUR {index}");
+        }
+    }
+
+    private void SetDefaultMicrophone(int index)
+    {
+        if (_captureDevices.Count == 0) RefreshCaptureDevices();
+        if (index < 0 || index >= _captureDevices.Count) return;
+        string id = _captureDevices[index].ID;
+        try
+        {
+            var policy = new PolicyConfigClient() as IPolicyConfig;
+            policy?.SetDefaultEndpoint(id, ERole.eConsole);
+            policy?.SetDefaultEndpoint(id, ERole.eMultimedia);
+            policy?.SetDefaultEndpoint(id, ERole.eCommunications);
+        }
+        catch (Exception ex)
+        {
+            _log.Info($"璁剧疆榛樿楹﹀厠椋庡け璐? {ex.Message}");
         }
     }
 
@@ -1060,6 +1476,9 @@ internal sealed class AppState
     private static readonly string StateFile = Path.Combine(StateDir, "appstate.json");
     
     public string? LastPort { get; set; }
+    public string? LastBleDeviceId { get; set; }
+    public string? LastBleDeviceName { get; set; }
+    public int LastLinkMode { get; set; } = 0;
     public DateTime LastConnected { get; set; }
     public bool RememberLastPort { get; set; } = true;
     public string? Theme { get; set; }

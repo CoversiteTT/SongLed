@@ -14,6 +14,7 @@
 
 // BLE connection state callback
 typedef void (*ble_connection_callback_t)(bool connected);
+typedef void (*ble_debug_callback_t)(const char* line);
 
 // Initialize BLE service
 bool ble_service_init(const char* device_name);
@@ -29,12 +30,14 @@ void ble_restart_advertising();
 
 // Check if BLE is connected
 bool ble_is_connected();
+bool ble_is_notify_ready();
 
 // Send a line of text to PC (replaces sendLine for BLE)
 bool ble_send_line(const char* line);
 
 // Register callback for connection state changes
 void ble_set_connection_callback(ble_connection_callback_t callback);
+void ble_set_debug_callback(ble_debug_callback_t callback);
 
 // Process incoming BLE data (call from main loop)
 void ble_process();

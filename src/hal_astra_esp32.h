@@ -7,6 +7,7 @@
 #include "freertos/portmacro.h"
 #include "freertos/semphr.h"
 #include "driver/gpio.h"
+#include "esp_timer.h"
 
 class HALAstraESP32 final : public HAL {
 public:
@@ -103,9 +104,11 @@ public:
   void clearImageOverlay();
   void setBarOverlay(const BarOverlay &overlay);
   void clearBarOverlay();
+  void setStatusBar(const std::string &text, bool linkReady, bool alertBlink);
   uint16_t getBackgroundColor() const;
   void setForegroundColor(uint16_t color);
   uint16_t getForegroundColor() const;
+  int consumeQueuedEncoderSteps();
 
 private:
   bool init_display();
@@ -123,10 +126,12 @@ private:
   void drawImageOverlayLine(int y, uint16_t *line, int width);
   void drawImageOverlayFrame();
   void drawBarOverlayLine(int y, uint16_t *line, int width);
+  void drawStatusBar();
   uint16_t blend565(uint16_t bg, uint16_t fg, float alpha) const;
   float ditherAlpha(float alpha, int x, int y) const;
 
   static void encoder_task(void *arg);
+  static void encoder_timer_cb(void *arg);
 
 private:
   void *panel = nullptr;
@@ -149,6 +154,9 @@ private:
   ArcOverlay arcOverlay {false, 0, 0, 0, 0, 0, 0, 1, 1};
   ImageOverlay imageOverlay {false, 0, 0, 0, 0, nullptr};
   BarOverlay barOverlay {false, 0, 0, 0, 0, 0.0f, 0.0f, 0, 0};
+  std::string statusBarText;
+  bool statusBarLinkReady = false;
+  bool statusBarAlertBlink = false;
   uint16_t fgColor = 0;
 
   uint8_t encState = 0;
@@ -165,6 +173,7 @@ private:
   bool btnSelectLast = false;
   bool btnBackPressed = false;
   bool btnSelectPressed = false;
+  esp_timer_handle_t encoderTimer = nullptr;
 
   static HALAstraESP32 *s_instance;
 };

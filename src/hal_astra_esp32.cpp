@@ -26,9 +26,11 @@ namespace {
 // Base config: 320x240 ST7789 (landscape).
 constexpr int SCREEN_W = 320;
 constexpr int SCREEN_H = 240;
+constexpr int STATUS_BAR_H = 12;
 constexpr int UI_SCALE = 1; // Use native resolution for better lyrics display
 constexpr int LOGICAL_W = (SCREEN_W + UI_SCALE - 1) / UI_SCALE;
 constexpr int LOGICAL_H = (SCREEN_H + UI_SCALE - 1) / UI_SCALE;
+constexpr int UI_LOGICAL_H = LOGICAL_H - STATUS_BAR_H;
 constexpr int TILE_W = (LOGICAL_W + 7) / 8;
 constexpr int TILE_H = (LOGICAL_H + 7) / 8;
 constexpr spi_host_device_t TFT_SPI_HOST = SPI2_HOST;
@@ -159,6 +161,11 @@ HALAstraESP32 *HALAstraESP32::s_instance = nullptr;
 HALAstraESP32::HALAstraESP32() = default;
 
 HALAstraESP32::~HALAstraESP32() {
+  if (encoderTimer) {
+    esp_timer_stop(encoderTimer);
+    esp_timer_delete(encoderTimer);
+    encoderTimer = nullptr;
+  }
   if (u8g2_buf) {
     free(u8g2_buf);
     u8g2_buf = nullptr;
@@ -176,7 +183,7 @@ HALAstraESP32::~HALAstraESP32() {
 void HALAstraESP32::init() {
   s_instance = this;
   config.screenWeight = LOGICAL_W;
-  config.screenHeight = LOGICAL_H;
+  config.screenHeight = UI_LOGICAL_H;
   config.screenBright = 255;
   fgColor = COLOR_FG;
 
@@ -682,6 +689,35 @@ void HALAstraESP32::drawBarOverlayLine(int y, uint16_t *line, int width) {
   }
 }
 
+void HALAstraESP32::drawStatusBar() {
+  if (!u8g2_buf) return;
+  const int h = STATUS_BAR_H;
+  if (h <= 0) return;
+
+  // Clear status area each frame.
+  u8g2_SetDrawColor(&u8g2, 0);
+  u8g2_DrawBox(&u8g2, 0, 0, LOGICAL_W, h);
+
+  // Separator line.
+  u8g2_SetDrawColor(&u8g2, 1);
+  u8g2_DrawHLine(&u8g2, 0, h - 1, LOGICAL_W);
+
+  // Link icon.
+  const int iconX = 2;
+  const int iconY = 2;
+  const int iconS = 7;
+  if (statusBarLinkReady) {
+    u8g2_DrawRBox(&u8g2, iconX, iconY, iconS, iconS, 2);
+  } else if (statusBarAlertBlink) {
+    u8g2_DrawRFrame(&u8g2, iconX, iconY, iconS, iconS, 2);
+  }
+
+  // Status text.
+  if (!statusBarText.empty()) {
+    u8g2_DrawUTF8(&u8g2, iconX + iconS + 3, h - 2, statusBarText.c_str());
+  }
+}
+
 void HALAstraESP32::init_inputs() {
   gpio_config_t in_conf = {
       .pin_bit_mask = (1ULL << PIN_ENC_A) | (1ULL << PIN_ENC_B) | (1ULL << PIN_ENC_SW) | (1ULL << PIN_BTN_BACK),
@@ -693,8 +729,19 @@ void HALAstraESP32::init_inputs() {
 
   encState = (static_cast<uint8_t>(gpio_get_level(PIN_ENC_A)) << 1) |
              static_cast<uint8_t>(gpio_get_level(PIN_ENC_B));
-
-  xTaskCreatePinnedToCore(encoder_task, "encoder", 2048, this, 1, nullptr, 1);
+  if (!encoderTimer) {
+    esp_timer_create_args_t args = {};
+    args.callback = &HALAstraESP32::encoder_timer_cb;
+    args.arg = this;
+    args.dispatch_method = ESP_TIMER_TASK;
+    args.name = "enc_tmr";
+    esp_timer_create(&args, &encoderTimer);
+  }
+  if (encoderTimer) {
+    esp_timer_stop(encoderTimer);
+    // 1ms polling independent from FreeRTOS tick (CONFIG_FREERTOS_HZ=100).
+    esp_timer_start_periodic(encoderTimer, 1000);
+  }
 }
 
 void HALAstraESP32::setArcOverlay(const ArcOverlay &overlay) {
@@ -704,7 +751,7 @@ void HALAstraESP32::setArcOverlay(const ArcOverlay &overlay) {
   }
   arcOverlay = overlay;
   arcOverlay.cx = overlay.cx * UI_SCALE;
-  arcOverlay.cy = overlay.cy * UI_SCALE;
+  arcOverlay.cy = overlay.cy * UI_SCALE + STATUS_BAR_H;
   arcOverlay.r = overlay.r * UI_SCALE;
   arcOverlay.thickness = std::max(1, overlay.thickness * UI_SCALE);
   if (arcOverlay.aa_samples < 1) arcOverlay.aa_samples = 1;
@@ -726,7 +773,7 @@ void HALAstraESP32::setImageOverlay(const uint16_t *data, int w, int h, int x, i
   imageOverlay.w = w;
   imageOverlay.h = h;
   imageOverlay.x = x;
-  imageOverlay.y = y;
+  imageOverlay.y = y + STATUS_BAR_H;
 }
 
 void HALAstraESP32::clearImageOverlay() {
@@ -740,10 +787,17 @@ void HALAstraESP32::setBarOverlay(const BarOverlay &overlay) {
     return;
   }
   barOverlay = overlay;
+  barOverlay.y = overlay.y + STATUS_BAR_H;
 }
 
 void HALAstraESP32::clearBarOverlay() {
   barOverlay.enabled = false;
+}
+
+void HALAstraESP32::setStatusBar(const std::string &text, bool linkReady, bool alertBlink) {
+  statusBarText = text;
+  statusBarLinkReady = linkReady;
+  statusBarAlertBlink = alertBlink;
 }
 
 uint16_t HALAstraESP32::getBackgroundColor() const {
@@ -760,11 +814,17 @@ uint16_t HALAstraESP32::getForegroundColor() const {
 
 void HALAstraESP32::encoder_task(void *arg) {
   auto *self = static_cast<HALAstraESP32 *>(arg);
-  const TickType_t delayTicks = std::max<TickType_t>(1, pdMS_TO_TICKS(10));
+  const TickType_t delayTicks = std::max<TickType_t>(1, pdMS_TO_TICKS(2));
   while (self) {
     self->updateEncoder();
     vTaskDelay(delayTicks);
   }
+}
+
+void HALAstraESP32::encoder_timer_cb(void *arg) {
+  auto *self = static_cast<HALAstraESP32 *>(arg);
+  if (!self) return;
+  self->updateEncoder();
 }
 
 void HALAstraESP32::updateEncoder() {
@@ -827,6 +887,12 @@ int HALAstraESP32::readEncoderSteps() {
   return 0;
 }
 
+int HALAstraESP32::consumeQueuedEncoderSteps() {
+  int queued = pendingSteps;
+  pendingSteps = 0;
+  return queued;
+}
+
 bool HALAstraESP32::readButton(gpio_num_t pin) {
   return gpio_get_level(pin) == 0;
 }
@@ -848,6 +914,7 @@ void HALAstraESP32::_canvasUpdate() {
 
   const uint8_t *buf = u8g2_buf;
   if (displayMutex) xSemaphoreTake(displayMutex, portMAX_DELAY);
+  drawStatusBar();
 
   if (displayConfig.use_framebuffer && framebuf) {
     // Render to back buffer if double buffering is enabled
@@ -976,14 +1043,14 @@ void HALAstraESP32::_setDrawType(unsigned char _type) {
 void HALAstraESP32::_drawPixel(float _x, float _y) {
   u8g2_DrawPixel(&u8g2,
                  static_cast<int16_t>(std::round(_x)),
-                 static_cast<int16_t>(std::round(_y)));
+                 static_cast<int16_t>(std::round(_y)) + STATUS_BAR_H);
 }
 
 void HALAstraESP32::_drawCircle(float _x, float _y, float _r) {
   if (_r <= 0.5f) return;
   u8g2_DrawCircle(&u8g2,
                   static_cast<int16_t>(std::round(_x)),
-                  static_cast<int16_t>(std::round(_y)),
+                  static_cast<int16_t>(std::round(_y)) + STATUS_BAR_H,
                   static_cast<int16_t>(std::round(_r)),
                   U8G2_DRAW_ALL);
 }
@@ -991,23 +1058,23 @@ void HALAstraESP32::_drawCircle(float _x, float _y, float _r) {
 void HALAstraESP32::_drawEnglish(float _x, float _y, const std::string &_text) {
   u8g2_DrawStr(&u8g2,
                static_cast<int16_t>(std::round(_x)),
-               static_cast<int16_t>(std::round(_y)),
+               static_cast<int16_t>(std::round(_y)) + STATUS_BAR_H,
                _text.c_str());
 }
 
 void HALAstraESP32::_drawChinese(float _x, float _y, const std::string &_text) {
   u8g2_DrawUTF8(&u8g2,
                 static_cast<int16_t>(std::round(_x)),
-                static_cast<int16_t>(std::round(_y)),
+                static_cast<int16_t>(std::round(_y)) + STATUS_BAR_H,
                 _text.c_str());
 }
 
 void HALAstraESP32::_setClipWindow(int _x0, int _y0, int _x1, int _y1) {
   u8g2_SetClipWindow(&u8g2,
                      static_cast<u8g2_uint_t>(_x0),
-                     static_cast<u8g2_uint_t>(_y0),
+                     static_cast<u8g2_uint_t>(_y0 + STATUS_BAR_H),
                      static_cast<u8g2_uint_t>(_x1),
-                     static_cast<u8g2_uint_t>(_y1));
+                     static_cast<u8g2_uint_t>(_y1 + STATUS_BAR_H));
 }
 
 void HALAstraESP32::_clearClipWindow() {
@@ -1019,7 +1086,7 @@ void HALAstraESP32::_drawVDottedLine(float _x, float _y, float _h) {
     if (i % 8 == 0 || (i - 1) % 8 == 0 || (i - 2) % 8 == 0) continue;
     u8g2_DrawPixel(&u8g2,
                    static_cast<int16_t>(std::round(_x)),
-                   static_cast<int16_t>(std::round(_y)) + i);
+                   static_cast<int16_t>(std::round(_y)) + STATUS_BAR_H + i);
   }
 }
 
@@ -1028,28 +1095,28 @@ void HALAstraESP32::_drawHDottedLine(float _x, float _y, float _l) {
     if (i % 8 == 0 || (i - 1) % 8 == 0 || (i - 2) % 8 == 0) continue;
     u8g2_DrawPixel(&u8g2,
                    static_cast<int16_t>(std::round(_x)) + i,
-                   static_cast<int16_t>(std::round(_y)));
+                   static_cast<int16_t>(std::round(_y)) + STATUS_BAR_H);
   }
 }
 
 void HALAstraESP32::_drawVLine(float _x, float _y, float _h) {
   u8g2_DrawVLine(&u8g2,
                  static_cast<int16_t>(std::round(_x)),
-                 static_cast<int16_t>(std::round(_y)),
+                 static_cast<int16_t>(std::round(_y)) + STATUS_BAR_H,
                  static_cast<int16_t>(std::round(_h)));
 }
 
 void HALAstraESP32::_drawHLine(float _x, float _y, float _l) {
   u8g2_DrawHLine(&u8g2,
                  static_cast<int16_t>(std::round(_x)),
-                 static_cast<int16_t>(std::round(_y)),
+                 static_cast<int16_t>(std::round(_y)) + STATUS_BAR_H,
                  static_cast<int16_t>(std::round(_l)));
 }
 
 void HALAstraESP32::_drawBMP(float _x, float _y, float _w, float _h, const unsigned char *_bitMap) {
   u8g2_DrawXBMP(&u8g2,
                 static_cast<int16_t>(std::round(_x)),
-                static_cast<int16_t>(std::round(_y)),
+                static_cast<int16_t>(std::round(_y)) + STATUS_BAR_H,
                 static_cast<int16_t>(std::round(_w)),
                 static_cast<int16_t>(std::round(_h)),
                 _bitMap);
@@ -1058,7 +1125,7 @@ void HALAstraESP32::_drawBMP(float _x, float _y, float _w, float _h, const unsig
 void HALAstraESP32::_drawBox(float _x, float _y, float _w, float _h) {
   u8g2_DrawBox(&u8g2,
                static_cast<int16_t>(std::round(_x)),
-               static_cast<int16_t>(std::round(_y)),
+               static_cast<int16_t>(std::round(_y)) + STATUS_BAR_H,
                static_cast<int16_t>(std::round(_w)),
                static_cast<int16_t>(std::round(_h)));
 }
@@ -1066,7 +1133,7 @@ void HALAstraESP32::_drawBox(float _x, float _y, float _w, float _h) {
 void HALAstraESP32::_drawRBox(float _x, float _y, float _w, float _h, float _r) {
   u8g2_DrawRBox(&u8g2,
                 static_cast<int16_t>(std::round(_x)),
-                static_cast<int16_t>(std::round(_y)),
+                static_cast<int16_t>(std::round(_y)) + STATUS_BAR_H,
                 static_cast<int16_t>(std::round(_w)),
                 static_cast<int16_t>(std::round(_h)),
                 static_cast<int16_t>(std::round(_r)));
@@ -1075,7 +1142,7 @@ void HALAstraESP32::_drawRBox(float _x, float _y, float _w, float _h, float _r) 
 void HALAstraESP32::_drawFrame(float _x, float _y, float _w, float _h) {
   u8g2_DrawFrame(&u8g2,
                  static_cast<int16_t>(std::round(_x)),
-                 static_cast<int16_t>(std::round(_y)),
+                 static_cast<int16_t>(std::round(_y)) + STATUS_BAR_H,
                  static_cast<int16_t>(std::round(_w)),
                  static_cast<int16_t>(std::round(_h)));
 }
@@ -1083,7 +1150,7 @@ void HALAstraESP32::_drawFrame(float _x, float _y, float _w, float _h) {
 void HALAstraESP32::_drawRFrame(float _x, float _y, float _w, float _h, float _r) {
   u8g2_DrawRFrame(&u8g2,
                   static_cast<int16_t>(std::round(_x)),
-                  static_cast<int16_t>(std::round(_y)),
+                  static_cast<int16_t>(std::round(_y)) + STATUS_BAR_H,
                   static_cast<int16_t>(std::round(_w)),
                   static_cast<int16_t>(std::round(_h)),
                   static_cast<int16_t>(std::round(_r)));

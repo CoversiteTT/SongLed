@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Diagnostics;
 using System.IO.Ports;
@@ -7,6 +7,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Text.RegularExpressions;
 using System.Management;
+using System.Collections.Generic;
 
 namespace SongLedFlasher;
 
@@ -34,20 +35,24 @@ internal sealed class FlasherForm : Form
 {
     private readonly ComboBox _comPortCombo;
     private readonly Button _selectFirmwareButton;
-    private readonly Button _selectBootloaderButton;
     private readonly Button _flashButton;
     private readonly TextBox _firmwarePathBox;
-    private readonly TextBox _bootloaderPathBox;
     private readonly TextBox _statusBox;
     private readonly ProgressBar _progressBar;
     private string? _selectedFirmwareFile;
-    private string? _selectedBootloaderFile;
     private System.Windows.Forms.Timer? _portRefreshTimer;
     private Dictionary<string, PortInfo> _portInfoCache = new();
     private string? _lastSelectedPort;
     private bool _isListeningMode = false;
     private Button? _listenButton;
     private List<string> _previousPorts = new();
+
+    private sealed class EsptoolCommand
+    {
+        public bool UsePython { get; set; }
+        public string ToolPath { get; set; } = "";
+        public string? PythonPath { get; set; }
+    }
 
     public FlasherForm()
     {
@@ -70,7 +75,6 @@ internal sealed class FlasherForm : Form
         panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));  // Port label/combo
         panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));  // Listen button row
         panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));  // Firmware
-        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));  // Bootloader
         panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 5));   // Spacer
         panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));  // Flash button
         panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 25));  // Progress bar
@@ -80,7 +84,7 @@ internal sealed class FlasherForm : Form
         // Instructions
         var instructionsLabel = new Label 
         { 
-            Text = "Instructions: Step 1: Click 'Listen' button first. Step 2: Plug in your ESP32 device. Step 3: Select firmware .bin file. Step 4: Click 'Start Flashing'. If flashing fails, try including bootloader file.",
+            Text = "Instructions: Step 1: Click 'Listen' button first. Step 2: Plug in your ESP32 device. Step 3: Select merged firmware .bin file (write to 0x0). Step 4: Click 'Start Flashing'.",
             Dock = DockStyle.Fill,
             AutoSize = false,
             TextAlign = ContentAlignment.TopLeft,
@@ -108,33 +112,14 @@ internal sealed class FlasherForm : Form
         };
         _listenButton.Click += (_, _) => ToggleListenMode();
 
-        var listenInfo = new Label 
-        { 
-            Text = "(waiting for device...)",
-            Dock = DockStyle.Fill,
-            AutoSize = false,
-            TextAlign = ContentAlignment.MiddleLeft,
-            Font = new Font(Font.FontFamily, 9, FontStyle.Italic),
-            ForeColor = System.Drawing.Color.Gray
-        };
-
         // Firmware File Selection
-        var firmwareLabel = new Label { Text = "Firmware (.bin):" };
+        var firmwareLabel = new Label { Text = "Merged Firmware (.bin):" };
         var firmwarePanel = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = false, Height = 30 };
         _selectFirmwareButton = new Button { Text = "Select", Width = 80, Height = 24 };
         _selectFirmwareButton.Click += (_, _) => SelectFirmwareFile();
         _firmwarePathBox = new TextBox { ReadOnly = true, Dock = DockStyle.Fill, Text = "(none)" };
         firmwarePanel.Controls.Add(_selectFirmwareButton);
         firmwarePanel.Controls.Add(_firmwarePathBox);
-
-        // Bootloader File Selection
-        var bootloaderLabel = new Label { Text = "Bootloader (.bin):" };
-        var bootloaderPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = false, Height = 30 };
-        _selectBootloaderButton = new Button { Text = "Select", Width = 80, Height = 24 };
-        _selectBootloaderButton.Click += (_, _) => SelectBootloaderFile();
-        _bootloaderPathBox = new TextBox { ReadOnly = true, Dock = DockStyle.Fill, Text = "(none)" };
-        bootloaderPanel.Controls.Add(_selectBootloaderButton);
-        bootloaderPanel.Controls.Add(_bootloaderPathBox);
 
         // Flash Button
         _flashButton = new Button 
@@ -174,19 +159,16 @@ internal sealed class FlasherForm : Form
         panel.Controls.Add(firmwareLabel, 0, 3);
         panel.Controls.Add(firmwarePanel, 1, 3);
 
-        panel.Controls.Add(bootloaderLabel, 0, 4);
-        panel.Controls.Add(bootloaderPanel, 1, 4);
-
-        panel.Controls.Add(_flashButton, 0, 6);
+        panel.Controls.Add(_flashButton, 0, 5);
         panel.SetColumnSpan(_flashButton, 2);
 
-        panel.Controls.Add(_progressBar, 0, 7);
+        panel.Controls.Add(_progressBar, 0, 6);
         panel.SetColumnSpan(_progressBar, 2);
 
-        panel.Controls.Add(statusLabel, 0, 8);
+        panel.Controls.Add(statusLabel, 0, 7);
         panel.SetColumnSpan(statusLabel, 2);
 
-        panel.Controls.Add(_statusBox, 0, 9);
+        panel.Controls.Add(_statusBox, 0, 8);
         panel.SetColumnSpan(_statusBox, 2);
         _statusBox.Height = 200;
 
@@ -197,7 +179,7 @@ internal sealed class FlasherForm : Form
             RefreshComPorts();
             _previousPorts = _portInfoCache.Keys.ToList();
             DetectAndSelectESP32Port();
-            AutoDetectBootloaderFile();
+            AutoDetectMergedFirmwareFile();
             
             // Start auto-refresh timer (every 1 second)
             _portRefreshTimer = new System.Windows.Forms.Timer();
@@ -217,45 +199,44 @@ internal sealed class FlasherForm : Form
     {
         using var dialog = new OpenFileDialog
         {
-            Filter = "Firmware Files (*.bin)|*.bin|All Files (*.*)|*.*",
-            Title = "Select Firmware Binary"
+            Filter = "Merged Firmware (*.bin)|*.bin|All Files (*.*)|*.*",
+            Title = "Select Merged Firmware Binary"
         };
 
         if (dialog.ShowDialog() == DialogResult.OK)
         {
             _selectedFirmwareFile = dialog.FileName;
             _firmwarePathBox.Text = Path.GetFileName(_selectedFirmwareFile);
-            AppendLog($"Selected firmware: {Path.GetFileName(_selectedFirmwareFile)}");
+            AppendLog($"Selected merged firmware: {Path.GetFileName(_selectedFirmwareFile)}");
         }
     }
 
-    private void SelectBootloaderFile()
-    {
-        using var dialog = new OpenFileDialog
-        {
-            Filter = "Bootloader Files (*.bin)|*.bin|All Files (*.*)|*.*",
-            Title = "Select Bootloader Binary"
-        };
-
-        if (dialog.ShowDialog() == DialogResult.OK)
-        {
-            _selectedBootloaderFile = dialog.FileName;
-            _bootloaderPathBox.Text = Path.GetFileName(_selectedBootloaderFile);
-            AppendLog($"Selected bootloader: {Path.GetFileName(_selectedBootloaderFile)}");
-        }
-    }
-
-    private void AutoDetectBootloaderFile()
+    private void AutoDetectMergedFirmwareFile()
     {
         try
         {
-            string appDir = Path.GetDirectoryName(AppContext.BaseDirectory) ?? "";
-            string bootloaderPath = Path.Combine(appDir, "bootloader.bin");
-            if (File.Exists(bootloaderPath))
+            string appDir = Path.GetDirectoryName(AppContext.BaseDirectory) ?? string.Empty;
+            string[] candidates =
             {
-                _selectedBootloaderFile = bootloaderPath;
-                _bootloaderPathBox.Text = "bootloader.bin (auto)";
-                AppendLog("Auto-detected bootloader.bin");
+                Path.Combine(appDir, "songled_v0.0.2_merged.bin"),
+                Path.Combine(appDir, "songled_merged.bin"),
+                Path.Combine(appDir, "merged.bin")
+            };
+
+            string? found = candidates.FirstOrDefault(File.Exists);
+            if (string.IsNullOrEmpty(found))
+            {
+                found = Directory.EnumerateFiles(appDir, "*merged*.bin", SearchOption.TopDirectoryOnly).FirstOrDefault();
+            }
+            if (string.IsNullOrEmpty(found))
+            {
+                found = Directory.EnumerateFiles(appDir, "*.bin", SearchOption.TopDirectoryOnly).FirstOrDefault();
+            }
+            if (!string.IsNullOrEmpty(found))
+            {
+                _selectedFirmwareFile = found;
+                _firmwarePathBox.Text = $"{Path.GetFileName(found)} (auto)";
+                AppendLog($"Auto-detected merged firmware: {Path.GetFileName(found)}");
             }
         }
         catch
@@ -305,7 +286,7 @@ internal sealed class FlasherForm : Form
         {
             var currentPorts = SerialPort.GetPortNames();
             
-            // 在监听模式下，与快照比对；否则与缓存比对
+            // 鍦ㄧ洃鍚ā寮忎笅锛屼笌蹇収姣斿锛涘惁鍒欎笌缂撳瓨姣斿
             var previousPorts = _isListeningMode ? _previousPorts.ToArray() : _portInfoCache.Keys.ToArray();
             
             // Check if port list changed
@@ -513,13 +494,13 @@ internal sealed class FlasherForm : Form
     {
         if (string.IsNullOrEmpty(_selectedFirmwareFile))
         {
-            MessageBox.Show("Please select a firmware file first", "Error");
+            MessageBox.Show("Please select a merged firmware file first", "Error");
             return;
         }
 
         if (!File.Exists(_selectedFirmwareFile))
         {
-            MessageBox.Show("Firmware file not found", "Error");
+            MessageBox.Show("Merged firmware file not found", "Error");
             return;
         }
 
@@ -530,59 +511,42 @@ internal sealed class FlasherForm : Form
             return;
         }
 
-        string esptoolPath = Path.Combine(AppContext.BaseDirectory, "esptool.exe");
-        if (!File.Exists(esptoolPath))
+        var esptool = ResolveEsptoolCommand();
+        if (esptool == null)
         {
-            AppendLog($"Error: esptool.exe not found at {esptoolPath}");
-            MessageBox.Show($"esptool.exe not found!\n\nExpected: {esptoolPath}", "Missing esptool");
+            string baseDir = AppContext.BaseDirectory;
+            AppendLog("Error: no esptool backend found");
+            MessageBox.Show($"Missing flasher backend.\nExpected one of:\n{Path.Combine(baseDir, "esptool.exe")}\n{Path.Combine(baseDir, "esptool.py")} + python.exe", "Missing esptool");
             return;
         }
 
         _flashButton.Enabled = false;
         _selectFirmwareButton.Enabled = false;
-        _selectBootloaderButton.Enabled = false;
         _comPortCombo.Enabled = false;
         _progressBar.Value = 0;
         _statusBox.Clear();
 
-        bool hasBootloader = !string.IsNullOrEmpty(_selectedBootloaderFile) && File.Exists(_selectedBootloaderFile);
         AppendLog($"Starting flash to {selectedPortInfo.PortName}...");
-        if (hasBootloader)
-            AppendLog($"Bootloader: {Path.GetFileName(_selectedBootloaderFile)}");
-        AppendLog($"Firmware: {Path.GetFileName(_selectedFirmwareFile)}");
+        AppendLog("Mode: single merged image");
+        AppendLog($"Image: {Path.GetFileName(_selectedFirmwareFile)}");
 
-        Task.Run(() => FlashFirmwareAsync(esptoolPath, selectedPortInfo.PortName, hasBootloader));
+        AppendLog(esptool.UsePython ? $"Backend: python + {Path.GetFileName(esptool.ToolPath)}" : $"Backend: {Path.GetFileName(esptool.ToolPath)}");
+        Task.Run(() => FlashFirmwareAsync(esptool, selectedPortInfo.PortName));
     }
 
-    private async Task FlashFirmwareAsync(string esptoolPath, string comPort, bool hasBootloader)
+    private async Task FlashFirmwareAsync(EsptoolCommand esptool, string comPort)
     {
         try
         {
-            int totalFiles = hasBootloader ? 2 : 1;
-            int currentFile = 0;
-
-            if (hasBootloader)
-            {
-                currentFile = 1;
-                AppendLog("Flashing bootloader (0x0)...");
-                await FlashFileAsync(esptoolPath, comPort, "0x0", _selectedBootloaderFile, currentFile, totalFiles);
-                AppendLog("✓ Bootloader flashed successfully");
-            }
-
-            currentFile++;
-            AppendLog("Flashing firmware (0x10000)...");
-            await FlashFileAsync(esptoolPath, comPort, "0x10000", _selectedFirmwareFile, currentFile, totalFiles);
-            AppendLog("✓ Firmware flashed successfully");
-
+            AppendLog("Flashing merged image (0x0)...");
+            await FlashFileAsync(esptool, comPort, "0x0", _selectedFirmwareFile!);
             UpdateProgress(100);
-            AppendLog("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-            AppendLog("✓ FLASH COMPLETE!");
-            AppendLog("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-            MessageBox.Show("Firmware flashed successfully!", "Success");
+            AppendLog("FLASH COMPLETE");
+            MessageBox.Show("Merged firmware flashed successfully.", "Success");
         }
         catch (Exception ex)
         {
-            AppendLog($"✗ ERROR: {ex.Message}");
+            AppendLog($"ERROR: {ex.Message}");
             MessageBox.Show($"Flash failed: {ex.Message}", "Error");
         }
         finally
@@ -593,7 +557,6 @@ internal sealed class FlasherForm : Form
                 {
                     _flashButton.Enabled = true;
                     _selectFirmwareButton.Enabled = true;
-                    _selectBootloaderButton.Enabled = true;
                     _comPortCombo.Enabled = true;
                 });
             }
@@ -601,18 +564,18 @@ internal sealed class FlasherForm : Form
             {
                 _flashButton.Enabled = true;
                 _selectFirmwareButton.Enabled = true;
-                _selectBootloaderButton.Enabled = true;
                 _comPortCombo.Enabled = true;
             }
         }
     }
 
-    private async Task FlashFileAsync(string esptoolPath, string comPort, string address, string filePath, int fileNum, int totalFiles)
+    private async Task FlashFileAsync(EsptoolCommand esptool, string comPort, string address, string filePath)
     {
+        string args = $"-p {comPort} -b 460800 --chip esp32s3 write_flash {address} \"{filePath}\"";
         var psi = new ProcessStartInfo
         {
-            FileName = esptoolPath,
-            Arguments = $"-p {comPort} -b 460800 --chip esp32s3 write_flash {address} \"{filePath}\"",
+            FileName = esptool.UsePython ? esptool.PythonPath! : esptool.ToolPath,
+            Arguments = esptool.UsePython ? $"\"{esptool.ToolPath}\" {args}" : args,
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -621,9 +584,6 @@ internal sealed class FlasherForm : Form
 
         using var process = Process.Start(psi);
         if (process == null) throw new Exception("Failed to start esptool.exe");
-
-        int fileProgress = 0;
-        int baseProgress = (fileNum - 1) * (100 / totalFiles);
 
         process.OutputDataReceived += (_, e) =>
         {
@@ -635,9 +595,7 @@ internal sealed class FlasherForm : Form
                 var match = Regex.Match(e.Data, @"(\d+)%\s+done");
                 if (match.Success && int.TryParse(match.Groups[1].Value, out int percent))
                 {
-                    fileProgress = percent;
-                    int overallProgress = baseProgress + (fileProgress / totalFiles);
-                    UpdateProgress(overallProgress);
+                    UpdateProgress(percent);
                 }
             }
         };
@@ -680,4 +638,66 @@ internal sealed class FlasherForm : Form
 
         _statusBox.AppendText($"[{DateTime.Now:HH:mm:ss}] {message}\r\n");
     }
+
+    private static EsptoolCommand? ResolveEsptoolCommand()
+    {
+        string baseDir = AppContext.BaseDirectory;
+        string exePath = Path.Combine(baseDir, "esptool.exe");
+        if (File.Exists(exePath))
+        {
+            return new EsptoolCommand { UsePython = false, ToolPath = exePath };
+        }
+
+        string pyPath = Path.Combine(baseDir, "esptool.py");
+        if (File.Exists(pyPath))
+        {
+            string? python = ResolvePythonCommand(baseDir);
+            if (!string.IsNullOrEmpty(python))
+            {
+                return new EsptoolCommand
+                {
+                    UsePython = true,
+                    ToolPath = pyPath,
+                    PythonPath = python
+                };
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ResolvePythonCommand(string baseDir)
+    {
+        string localPython = Path.Combine(baseDir, "python.exe");
+        if (File.Exists(localPython)) return localPython;
+
+        string? envPython = Environment.GetEnvironmentVariable("PYTHON");
+        if (!string.IsNullOrEmpty(envPython) && File.Exists(envPython)) return envPython;
+
+        string? pathPython = FindInPath("python.exe");
+        if (!string.IsNullOrEmpty(pathPython)) return pathPython;
+
+        return null;
+    }
+
+    private static string? FindInPath(string fileName)
+    {
+        string? pathEnv = Environment.GetEnvironmentVariable("PATH");
+        if (string.IsNullOrEmpty(pathEnv)) return null;
+        foreach (string dir in pathEnv.Split(Path.PathSeparator))
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(dir)) continue;
+                string candidate = Path.Combine(dir.Trim(), fileName);
+                if (File.Exists(candidate)) return candidate;
+            }
+            catch
+            {
+                // ignore bad path entry
+            }
+        }
+        return null;
+    }
 }
+
